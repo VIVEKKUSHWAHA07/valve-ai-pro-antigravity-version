@@ -21,12 +21,48 @@ app.post('/api/upload-rfq', upload.single('file'), async (req, res) => {
 
     const userId = req.body.user_id;
     const filename = req.file.originalname;
+    const columnMap = req.body.columnMap ? JSON.parse(req.body.columnMap) : undefined;
 
-    const result = await processRFQ(req.file.buffer, userId, filename);
+    const result = await processRFQ(req.file.buffer, userId, filename, columnMap);
     res.json(result);
   } catch (error: any) {
     console.error('Error processing RFQ:', error);
     res.status(500).json({ error: error.message || 'Failed to process RFQ' });
+  }
+});
+
+app.post('/api/extract-headers', upload.single('file'), (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+    
+    const xlsx = require('xlsx');
+    const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const data = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false }) as any[][];
+    
+    if (data.length < 2) {
+      return res.status(400).json({ error: 'Excel file is empty or missing headers' });
+    }
+    
+    let headerRowIndex = 0;
+    for (let i = 0; i < Math.min(10, data.length); i++) {
+      const nonEmpty = data[i].filter(c => c && String(c).trim()).length;
+      if (nonEmpty >= 3) { headerRowIndex = i; break; }
+    }
+    
+    const headers = data[headerRowIndex] as string[];
+    
+    // Auto-detect columns
+    const { detectColumns } = require('./backend/engine');
+    const detectedMap = detectColumns(headers);
+    
+    res.json({ headers, headerRowIndex, detectedMap });
+  } catch (error: any) {
+    console.error('Error extracting headers:', error);
+    res.status(500).json({ error: error.message || 'Failed to extract headers' });
   }
 });
 
@@ -81,8 +117,9 @@ app.post('/api/test/batch', upload.single('file'), async (req, res) => {
 
     const userId = req.body.user_id;
     const filename = req.file.originalname;
+    const columnMap = req.body.columnMap ? JSON.parse(req.body.columnMap) : undefined;
 
-    const result = await processRFQ(req.file.buffer, userId, filename);
+    const result = await processRFQ(req.file.buffer, userId, filename, columnMap);
     res.json(result);
   } catch (error: any) {
     console.error('Error processing batch RFQ:', error);

@@ -2,6 +2,31 @@ import React, { useState, useEffect } from 'react';
 import { Settings, Save, Plus, Trash2, AlertCircle, Clock } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
+interface Condition {
+  field: string;
+  operator: string;
+  value: string;
+}
+
+interface CustomRule {
+  id: string;
+  rule_name: string;
+  conditions: Condition[];
+  output_field: string;
+  output_value: string;
+  priority: number;
+  active: boolean;
+}
+
+interface TestInput {
+  valve_type: string;
+  size: string;
+  class: string;
+  moc: string;
+  end_type: string;
+  trim: string;
+}
+
 export function RulesEditor() {
   const [activeTab, setActiveTab] = useState('aliases');
   const [saving, setSaving] = useState(false);
@@ -14,6 +39,9 @@ export function RulesEditor() {
   const [trimTable, setTrimTable] = useState<any[]>([]);
   const [operatorThresholds, setOperatorThresholds] = useState<any[]>([]);
   const [notMfg, setNotMfg] = useState<any[]>([]);
+  const [customRules, setCustomRules] = useState<CustomRule[]>([]);
+  const [testInput, setTestInput] = useState<TestInput>({ valve_type: '', size: '', class: '', moc: '', end_type: '', trim: '' });
+  const [testOutput, setTestOutput] = useState<string[]>([]);
 
   useEffect(() => {
     loadAllRules();
@@ -22,7 +50,17 @@ export function RulesEditor() {
   const loadAllRules = async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase.from('engine_rules').select('*');
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        setDefaults();
+        setLoading(false);
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from('engine_rules')
+        .select('*')
+        .eq('user_id', user.id);
       
       if (error) {
         console.error('Error loading rules:', error);
@@ -43,6 +81,17 @@ export function RulesEditor() {
         if (latest) setLastSaved(new Date(latest));
       } else {
         setDefaults();
+      }
+
+      // Load user custom rules
+      const { data: customData, error: customError } = await supabase
+        .from('user_custom_rules')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('priority', { ascending: true });
+
+      if (!customError && customData) {
+        setCustomRules(customData);
       }
     } catch (err) {
       console.error('Failed to load rules', err);
@@ -85,20 +134,131 @@ export function RulesEditor() {
     ]);
   };
 
+  const saveCustomRules = async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Not logged in');
+
+      for (const rule of customRules) {
+        // Validate — skip rules with empty conditions or output
+        if (!rule.output_field || !rule.output_value) continue;
+        if (rule.conditions.some(c => !c.field || !c.value)) continue;
+
+        const { error } = await supabase
+          .from('user_custom_rules')
+          .upsert({
+            id: rule.id,
+            user_id: user.id,
+            rule_name: rule.rule_name,
+            conditions: rule.conditions,
+            output_field: rule.output_field,
+            output_value: rule.output_value,
+            priority: rule.priority,
+            active: rule.active,
+            updated_at: new Date().toISOString()
+          }, { onConflict: 'id' });
+
+        if (error) throw error;
+      }
+
+      alert('Custom rules saved successfully');
+    } catch (err: any) {
+      alert(`Failed to save custom rules: ${err.message}`);
+    }
+  };
+
+  const deleteCustomRule = async (id: string) => {
+    try {
+      const { error } = await supabase
+        .from('user_custom_rules')
+        .delete()
+        .eq('id', id);
+
+      if (error) throw error;
+      setCustomRules(customRules.filter(r => r.id !== id));
+    } catch (err: any) {
+      alert(`Failed to delete rule: ${err.message}`);
+    }
+  };
+
+  const addCustomRule = () => {
+    const newRule: CustomRule = {
+      id: crypto.randomUUID(),
+      rule_name: 'New Rule',
+      conditions: [{ field: 'valve_type', operator: 'equals', value: '' }],
+      output_field: 'operator',
+      output_value: '',
+      priority: customRules.length + 1,
+      active: true,
+    };
+    setCustomRules([...customRules, newRule]);
+  };
+
+  const runTest = () => {
+    const results: string[] = [];
+    const input: Record<string, string> = { ...testInput };
+
+    const activeRules = customRules
+      .filter(r => r.active)
+      .sort((a, b) => a.priority - b.priority);
+
+    if (activeRules.length === 0) {
+      setTestOutput(['No active custom rules to test.']);
+      return;
+    }
+
+    for (const rule of activeRules) {
+      const allMet = rule.conditions.every(cond => {
+        const actual = input[cond.field] || '';
+        switch (cond.operator) {
+          case 'equals':     return actual.toLowerCase() === cond.value.toLowerCase();
+          case 'not_equals': return actual.toLowerCase() !== cond.value.toLowerCase();
+          case '>=':         return parseFloat(actual) >= parseFloat(cond.value);
+          case '<=':         return parseFloat(actual) <= parseFloat(cond.value);
+          case 'contains':   return actual.toLowerCase().includes(cond.value.toLowerCase());
+          default:           return false;
+        }
+      });
+
+      if (allMet) {
+        results.push(`✅ Rule "${rule.rule_name}" MATCHED → ${rule.output_field} = "${rule.output_value}"`);
+        input[rule.output_field] = rule.output_value; // apply it
+      } else {
+        results.push(`❌ Rule "${rule.rule_name}" did not match`);
+      }
+    }
+
+    if (results.length === 0) {
+      results.push('No rules matched the test input.');
+    }
+
+    setTestOutput(results);
+  };
+
   const handleSave = async () => {
     setSaving(true);
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Not authenticated');
+
+      // Filter out blank rows before saving
+      const validAliases = aliases.filter(r => r.abbr.trim() !== '');
+      const validMoc = mocMappings.filter(r => r.customerWrites.trim() !== '');
+      const validTrim = trimTable.filter(r => r.code.trim() !== '');
+      const validOperator = operatorThresholds.filter(r => r.category.trim() !== '');
+      const validNotMfg = notMfg.filter(r => r.key.trim() !== '');
+
       // Prepare all rules for upsert
       const allRules = [
-        ...aliases.map(r => ({ id: r.id, rule_type: 'aliases', rule_data: { abbr: r.abbr, mapsTo: r.mapsTo, layer: r.layer } })),
-        ...mocMappings.map(r => ({ id: r.id, rule_type: 'moc', rule_data: { customerWrites: r.customerWrites, resolvedMoc: r.resolvedMoc, type: r.type, flagIfSmall: r.flagIfSmall } })),
-        ...trimTable.map(r => ({ id: r.id, rule_type: 'trim', rule_data: { code: r.code, wo: r.wo, ss: r.ss, ssw: r.ssw } })),
-        ...operatorThresholds.map(r => ({ id: r.id, rule_type: 'operator', rule_data: { category: r.category, class: r.class, threshold: r.threshold, below: r.below } })),
-        ...notMfg.map(r => ({ id: r.id, rule_type: 'notmfg', rule_data: { key: r.key, label: r.label, active: r.active } })),
+        ...validAliases.map(r => ({ user_id: user.id, rule_type: 'aliases', rule_key: r.abbr, rule_data: { abbr: r.abbr, mapsTo: r.mapsTo, layer: r.layer } })),
+        ...validMoc.map(r => ({ user_id: user.id, rule_type: 'moc', rule_key: r.customerWrites, rule_data: { customerWrites: r.customerWrites, resolvedMoc: r.resolvedMoc, type: r.type, flagIfSmall: r.flagIfSmall } })),
+        ...validTrim.map(r => ({ user_id: user.id, rule_type: 'trim', rule_key: r.code, rule_data: { code: r.code, wo: r.wo, ss: r.ss, ssw: r.ssw } })),
+        ...validOperator.map(r => ({ user_id: user.id, rule_type: 'operator', rule_key: `${r.category}-${r.class}`, rule_data: { category: r.category, class: r.class, threshold: r.threshold, below: r.below } })),
+        ...validNotMfg.map(r => ({ user_id: user.id, rule_type: 'notmfg', rule_key: r.key, rule_data: { key: r.key, label: r.label, active: r.active } })),
       ];
 
-      // Upsert to Supabase
-      const { error } = await supabase.from('engine_rules').upsert(allRules, { onConflict: 'id' });
+      // Upsert to Supabase using the unique constraint
+      const { error } = await supabase.from('engine_rules').upsert(allRules, { onConflict: 'rule_type, rule_key, user_id' });
       
       if (error) throw error;
       
@@ -187,6 +347,7 @@ export function RulesEditor() {
             { id: 'trim', label: 'Trim Table' },
             { id: 'operator', label: 'Operator Thresholds' },
             { id: 'notmfg', label: 'Not-Manufactured' },
+            { id: 'custom', label: 'Custom Rules' },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -385,6 +546,219 @@ export function RulesEditor() {
                   </tbody>
                 </table>
               </div>
+            </div>
+          )}
+
+          {activeTab === 'custom' && (
+            <div className="space-y-6">
+
+              {/* Header */}
+              <div className="flex justify-between items-center">
+                <p className="text-sm text-slate-500 dark:text-slate-400">
+                  Rules are applied in priority order. They override default engine output for matching rows only.
+                </p>
+                <div className="flex gap-3">
+                  <button
+                    onClick={addCustomRule}
+                    className="flex items-center gap-2 text-sm font-medium text-purple-600 dark:text-purple-400 hover:text-purple-700"
+                  >
+                    <Plus className="w-4 h-4" /> Add Rule
+                  </button>
+                  <button
+                    onClick={saveCustomRules}
+                    className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg text-sm font-medium"
+                  >
+                    <Save className="w-4 h-4" /> Save All Rules
+                  </button>
+                </div>
+              </div>
+
+              {/* Rule Cards */}
+              {customRules.length === 0 && (
+                <div className="text-center py-12 text-slate-400 dark:text-slate-500 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-xl">
+                  No custom rules yet. Click "Add Rule" to create your first rule.
+                </div>
+              )}
+
+              {customRules.map((rule, ruleIdx) => (
+                <div key={rule.id} className={`border rounded-xl p-5 space-y-4 ${rule.active ? 'border-purple-200 dark:border-purple-800 bg-purple-50/30 dark:bg-purple-900/10' : 'border-slate-200 dark:border-slate-700 opacity-60'}`}>
+
+                  {/* Rule header */}
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <input
+                      type="text"
+                      value={rule.rule_name}
+                      onChange={e => setCustomRules(customRules.map((r, i) => i === ruleIdx ? { ...r, rule_name: e.target.value } : r))}
+                      className="flex-1 font-semibold text-slate-900 dark:text-white bg-transparent border-b border-slate-300 dark:border-slate-600 focus:outline-none focus:border-purple-500 text-sm py-1"
+                      placeholder="Rule name..."
+                    />
+                    <div className="flex items-center gap-2 text-xs text-slate-500">
+                      Priority:
+                      <input
+                        type="number"
+                        value={rule.priority}
+                        onChange={e => setCustomRules(customRules.map((r, i) => i === ruleIdx ? { ...r, priority: parseInt(e.target.value) || 1 } : r))}
+                        className="w-12 text-center bg-slate-100 dark:bg-slate-700 rounded px-1 py-0.5 text-xs"
+                      />
+                    </div>
+                    <label className="flex items-center gap-1 text-xs text-slate-500 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={rule.active}
+                        onChange={e => setCustomRules(customRules.map((r, i) => i === ruleIdx ? { ...r, active: e.target.checked } : r))}
+                        className="rounded"
+                      />
+                      Active
+                    </label>
+                    <button onClick={() => deleteCustomRule(rule.id)} className="text-slate-400 hover:text-red-500">
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {/* IF Conditions */}
+                  <div className="space-y-2">
+                    <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">IF</div>
+                    {rule.conditions.map((cond, condIdx) => (
+                      <div key={condIdx} className="flex items-center gap-2 flex-wrap">
+                        {condIdx > 0 && <span className="text-xs font-bold text-purple-500 w-8">AND</span>}
+                        {condIdx === 0 && <span className="w-8" />}
+
+                        <select
+                          value={cond.field}
+                          onChange={e => {
+                            const updated = rule.conditions.map((c, ci) => ci === condIdx ? { ...c, field: e.target.value } : c);
+                            setCustomRules(customRules.map((r, i) => i === ruleIdx ? { ...r, conditions: updated } : r));
+                          }}
+                          className="bg-slate-100 dark:bg-slate-700 border-none rounded-lg px-3 py-1.5 text-sm text-slate-700 dark:text-slate-200"
+                        >
+                          <option value="valve_type">Valve Type</option>
+                          <option value="size">Size (inches)</option>
+                          <option value="class">Class</option>
+                          <option value="moc">MOC</option>
+                          <option value="end_type">End Type</option>
+                          <option value="trim">Trim</option>
+                        </select>
+
+                        <select
+                          value={cond.operator}
+                          onChange={e => {
+                            const updated = rule.conditions.map((c, ci) => ci === condIdx ? { ...c, operator: e.target.value } : c);
+                            setCustomRules(customRules.map((r, i) => i === ruleIdx ? { ...r, conditions: updated } : r));
+                          }}
+                          className="bg-slate-100 dark:bg-slate-700 border-none rounded-lg px-3 py-1.5 text-sm text-slate-700 dark:text-slate-200"
+                        >
+                          <option value="equals">equals</option>
+                          <option value="not_equals">not equals</option>
+                          <option value=">=">≥ (greater or equal)</option>
+                          <option value="<=">≤ (less or equal)</option>
+                          <option value="contains">contains</option>
+                        </select>
+
+                        <input
+                          type="text"
+                          value={cond.value}
+                          onChange={e => {
+                            const updated = rule.conditions.map((c, ci) => ci === condIdx ? { ...c, value: e.target.value } : c);
+                            setCustomRules(customRules.map((r, i) => i === ruleIdx ? { ...r, conditions: updated } : r));
+                          }}
+                          placeholder="value..."
+                          className="flex-1 min-w-[100px] bg-slate-100 dark:bg-slate-700 border-none rounded-lg px-3 py-1.5 text-sm text-slate-700 dark:text-slate-200 focus:ring-1 focus:ring-purple-500"
+                        />
+
+                        <button
+                          onClick={() => {
+                            const updated = rule.conditions.filter((_, ci) => ci !== condIdx);
+                            setCustomRules(customRules.map((r, i) => i === ruleIdx ? { ...r, conditions: updated } : r));
+                          }}
+                          className="text-slate-400 hover:text-red-500"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+
+                    <button
+                      onClick={() => {
+                        const updated = [...rule.conditions, { field: 'valve_type', operator: 'equals', value: '' }];
+                        setCustomRules(customRules.map((r, i) => i === ruleIdx ? { ...r, conditions: updated } : r));
+                      }}
+                      className="text-xs text-purple-500 hover:text-purple-600 flex items-center gap-1 ml-8 mt-1"
+                    >
+                      <Plus className="w-3 h-3" /> Add Condition
+                    </button>
+                  </div>
+
+                  {/* THEN Output */}
+                  <div className="space-y-2">
+                    <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">THEN</div>
+                    <div className="flex items-center gap-2 flex-wrap ml-8">
+                      <select
+                        value={rule.output_field}
+                        onChange={e => setCustomRules(customRules.map((r, i) => i === ruleIdx ? { ...r, output_field: e.target.value } : r))}
+                        className="bg-slate-100 dark:bg-slate-700 border-none rounded-lg px-3 py-1.5 text-sm text-slate-700 dark:text-slate-200"
+                      >
+                        <option value="operator">Operator</option>
+                        <option value="model">Model</option>
+                        <option value="standard">Standard</option>
+                        <option value="trim">Trim</option>
+                        <option value="gasket">Gasket</option>
+                        <option value="packing">Packing</option>
+                        <option value="bolting">Bolting</option>
+                      </select>
+                      <span className="text-sm text-slate-400">=</span>
+                      <input
+                        type="text"
+                        value={rule.output_value}
+                        onChange={e => setCustomRules(customRules.map((r, i) => i === ruleIdx ? { ...r, output_value: e.target.value } : r))}
+                        placeholder="output value..."
+                        className="flex-1 min-w-[150px] bg-slate-100 dark:bg-slate-700 border-none rounded-lg px-3 py-1.5 text-sm text-slate-700 dark:text-slate-200 focus:ring-1 focus:ring-purple-500"
+                      />
+                    </div>
+                  </div>
+
+                </div>
+              ))}
+
+              {/* ── TEST PANEL ── */}
+              <div className="mt-8 border border-slate-200 dark:border-slate-700 rounded-xl p-6 space-y-4">
+                <h3 className="font-semibold text-slate-900 dark:text-white text-sm flex items-center gap-2">
+                  🧪 Test Custom Rules
+                </h3>
+                <p className="text-xs text-slate-500">Fill in the fields below and click Run Test to see which rules match.</p>
+
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                  {['valve_type', 'size', 'class', 'moc', 'end_type', 'trim'].map(field => (
+                    <div key={field}>
+                      <label className="text-xs text-slate-500 capitalize mb-1 block">{field.replace('_', ' ')}</label>
+                      <input
+                        type="text"
+                        value={testInput[field as keyof TestInput]}
+                        onChange={e => setTestInput({ ...testInput, [field]: e.target.value })}
+                        placeholder={field === 'valve_type' ? 'e.g. Gate Valve' : field === 'size' ? 'e.g. 6' : field === 'class' ? 'e.g. 150' : ''}
+                        className="w-full bg-slate-100 dark:bg-slate-700 border-none rounded-lg px-3 py-1.5 text-sm text-slate-700 dark:text-slate-200 focus:ring-1 focus:ring-purple-500"
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                <button
+                  onClick={runTest}
+                  className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-5 py-2 rounded-lg text-sm font-medium"
+                >
+                  ▶ Run Test
+                </button>
+
+                {testOutput.length > 0 && (
+                  <div className="space-y-2 mt-3">
+                    {testOutput.map((line, i) => (
+                      <div key={i} className={`text-sm px-4 py-2 rounded-lg font-mono ${line.startsWith('✅') ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-400' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
+                        {line}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
             </div>
           )}
         </div>

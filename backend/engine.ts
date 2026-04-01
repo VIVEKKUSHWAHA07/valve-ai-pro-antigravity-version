@@ -45,17 +45,47 @@ export interface ProcessResult {
   flags: Flag[];
   processed_rows: ProcessedRow[];
   download_url?: string;
+  columnMap?: any;
+  format?: string;
 }
 
-export function processSingleRow(rowData: any, rowIndex: number = 1): { processedRow: ProcessedRow, flags: Flag[], isNotMfg: boolean } {
+// --- Format Detection Engine ---
+
+export function detectColumns(headers: any[]): Record<string, number> {
+  const HEADER_ALIASES: Record<string, string[]> = {
+    desc:     ['DESCRIPTION','DESC','ITEM DESC','VALVE TYPE','TYPE','ITEM DESCRIPTION','PARTICULARS','SERVICE'],
+    size:     ['SIZE','NPS','DN','BORE','VALVE SIZE','PIPE SIZE'],
+    rating:   ['RATING','CLASS','PRESSURE CLASS','PRESSURE RATING','CL','ANSI CLASS','PRESS CLASS'],
+    body:     ['BODY','MOC','MATERIAL','BODY MATERIAL','BODY MOC','MATERIAL OF CONSTRUCTION','BODY/BONNET'],
+    trim:     ['TRIM','TRIM MATERIAL','SEAT','TRIM/SEAT','TRIM MAT'],
+    endType:  ['END','END TYPE','END CONNECTION','ENDS','FACING','END CONN'],
+    construct:['CONSTRUCTION','DESIGN','CONSTRUCTION TYPE'],
+    qty:      ['QTY','QUANTITY','NOS','NOS.','NO.','NUMBERS'],
+  };
+
+  const colMap: Record<string, number> = {};
+  headers.forEach((h, i) => {
+    const clean = String(h || '').toUpperCase().trim();
+    if (!clean) return;
+    for (const [field, aliases] of Object.entries(HEADER_ALIASES)) {
+      if (colMap[field] === undefined && aliases.some(a => clean.includes(a))) {
+        colMap[field] = i;
+      }
+    }
+  });
+  return colMap;
+}
+
+
+export function processSingleRow(rowData: any, rowIndex: number = 1, catalogue: any[] = [], notMfgList: string[] = ['Butterfly Valve', 'Plug Valve', 'Strainer', 'Double Block & Bleed'], userCustomRules: any[] = []): { processedRow: ProcessedRow, flags: Flag[], isNotMfg: boolean } {
   const flags: Flag[] = [];
   const combinedDesc = `${rowData.desc} ${rowData.body} ${rowData.endType} ${rowData.construct}`.toUpperCase();
 
   // 1. Detect Valve Type
-  let valveType = detectValveType(combinedDesc);
+  let valveType = detectValveType(rowData.desc, rowData.body, rowData.construct);
   let isNotMfg = false;
 
-  if (['Butterfly Valve', 'Plug Valve', 'Strainer', 'Double Block & Bleed'].includes(valveType)) {
+  if (notMfgList.includes(valveType)) {
     isNotMfg = true;
   }
 
@@ -160,7 +190,7 @@ export function processSingleRow(rowData: any, rowIndex: number = 1): { processe
     processedRow.bolting = getBolting(processedRow.moc) || 'Standard Bolting';
 
     // Mock Supabase Matching
-    const matchScore = calculateScore(processedRow);
+    const matchScore = calculateScore(processedRow, catalogue);
     processedRow.score = matchScore;
 
     if (matchScore < 70) {
@@ -170,15 +200,46 @@ export function processSingleRow(rowData: any, rowIndex: number = 1): { processe
         message: 'No catalogue match found',
         type: 'warning'
       });
-    } else {
-      processedRow.matchId = `CAT-${Math.floor(Math.random() * 10000)}`;
+    }
+  }
+
+  // Apply user custom rules — override defaults for this user only
+  for (const rule of userCustomRules) {
+    const allMet = rule.conditions.every((cond: any) => {
+      const fieldMap: Record<string, string> = {
+        valve_type: processedRow.valveType,
+        size:       processedRow.size?.replace('"', '') || '',
+        class:      processedRow.class?.replace('CLASS ', '') || '',
+        moc:        processedRow.moc || '',
+        end_type:   processedRow.endDetail || '',
+        trim:       processedRow.trim || '',
+      };
+      const actual = fieldMap[cond.field] || '';
+
+      switch (cond.operator) {
+        case 'equals':     return actual.toLowerCase() === cond.value.toLowerCase();
+        case 'not_equals': return actual.toLowerCase() !== cond.value.toLowerCase();
+        case '>=':         return parseFloat(actual) >= parseFloat(cond.value);
+        case '<=':         return parseFloat(actual) <= parseFloat(cond.value);
+        case 'contains':   return actual.toLowerCase().includes(cond.value.toLowerCase());
+        default:           return false;
+      }
+    });
+
+    if (allMet) {
+      const fieldMap: Record<string, keyof ProcessedRow> = {
+        operator: 'operator', model: 'model', standard: 'standard',
+        trim: 'trim', gasket: 'gasket', packing: 'packing', bolting: 'bolting',
+      };
+      const target = fieldMap[rule.output_field];
+      if (target) (processedRow as any)[target] = rule.output_value;
     }
   }
 
   return { processedRow, flags, isNotMfg };
 }
 
-export async function processRFQ(fileBuffer: Buffer, userId?: string, filename?: string): Promise<ProcessResult> {
+export async function processRFQ(fileBuffer: Buffer, userId?: string, filename?: string, customColumnMap?: Record<string, number>): Promise<ProcessResult> {
   const workbook = xlsx.read(fileBuffer, { type: 'buffer' });
   const sheetName = workbook.SheetNames[0];
   const sheet = workbook.Sheets[sheetName];
@@ -192,48 +253,183 @@ export async function processRFQ(fileBuffer: Buffer, userId?: string, filename?:
     throw new Error('Excel file is empty or missing headers');
   }
 
-  // Use exact indices as specified in the prompt
-  const colMap = {
-    item: 0,
-    desc: 1, // Assuming description is at index 1
-    spec: 2,
-    rating: 3, // Assuming rating is at index 3
-    body: 4, // MOC must be read ONLY from RFQ Body/MOC col (index 4)
-    trim: 7, // Trim must be read ONLY from RFQ Trim col (index 7)
-    construct: 8,
-    endType: 9,
-    size: 11, // Size must come from RFQ col index 11 (0-indexed)
-    qty: 12
-  };
+  // Find actual header row (skip blank rows at top)
+  let headerRowIndex = 0;
+  for (let i = 0; i < Math.min(10, data.length); i++) {
+    const nonEmpty = data[i].filter(c => c && String(c).trim()).length;
+    if (nonEmpty >= 3) { headerRowIndex = i; break; }
+  }
+
+  const dataRows = data.slice(headerRowIndex + 1);
+
+  // Phase 1: Detect format once
+  const headers = data[headerRowIndex] as any[];
+  const columnMap = customColumnMap || detectColumns(headers);
+
+  // Fetch product catalogue and rules
+  let catalogue: any[] = [];
+  let notMfgList = ['Butterfly Valve', 'Plug Valve', 'Strainer', 'Double Block & Bleed'];
+  const sb = getSupabase();
+  if (sb) {
+    try {
+      const [{ data: catData, error: catError }, { data: rulesData, error: rulesError }] = await Promise.all([
+        sb.from('product_catalogue').select('*'),
+        userId ? sb.from('engine_rules').select('*').eq('user_id', userId) : Promise.resolve({ data: null, error: null })
+      ]);
+      
+      if (!catError && catData) {
+        catalogue = catData;
+      }
+
+      if (!rulesError && rulesData) {
+        // Merge aliases
+        const aliases = rulesData.filter(r => r.rule_type === 'aliases');
+        for (const rule of aliases) {
+          const { abbr, mapsTo } = rule.rule_data;
+          if (!abbr || !mapsTo) continue;
+          
+          const targetMap = mapsTo.toLowerCase().includes('valve') ? VALVE_ALIASES : null;
+          if (targetMap) {
+            const key = Object.keys(VALVE_CANONICAL).find(k => VALVE_CANONICAL[k].toLowerCase() === mapsTo.toLowerCase());
+            if (key) {
+              if (!targetMap[key]) targetMap[key] = [];
+              if (!targetMap[key].includes(abbr.toUpperCase())) {
+                targetMap[key].push(abbr.toUpperCase());
+              }
+            }
+          }
+        }
+
+        // Merge MOC rules
+        const mocRules = rulesData.filter(r => r.rule_type === 'moc');
+        for (const rule of mocRules) {
+          const { customerWrites, resolvedMoc, type } = rule.rule_data;
+          if (!customerWrites || !resolvedMoc) continue;
+
+          // Find existing key or create new one
+          let key = Object.keys(MOC_CANONICAL).find(k => MOC_CANONICAL[k].toLowerCase() === resolvedMoc.toLowerCase());
+          if (!key) {
+            key = customerWrites.toLowerCase().replace(/[^a-z0-9]/g, '');
+            MOC_CANONICAL[key] = resolvedMoc;
+            MOC_CAST[key] = type === 'Cast';
+          }
+          
+          if (!MOC_ALIASES[key]) MOC_ALIASES[key] = [];
+          if (!MOC_ALIASES[key].includes(customerWrites.toUpperCase())) {
+            MOC_ALIASES[key].push(customerWrites.toUpperCase());
+          }
+        }
+
+        // Merge Not Mfg rules
+        const notMfgRules = rulesData.filter(r => r.rule_type === 'notmfg');
+        for (const rule of notMfgRules) {
+          const { label, active } = rule.rule_data;
+          if (active && label && !notMfgList.includes(label)) {
+            notMfgList.push(label);
+          } else if (!active && label) {
+            notMfgList = notMfgList.filter(l => l !== label);
+          }
+        }
+
+        // Merge Trim rules
+        const trimRules = rulesData.filter(r => r.rule_type === 'trim');
+        for (const rule of trimRules) {
+          const { code, wo, ss, ssw } = rule.rule_data;
+          if (!code) continue;
+
+          // Find existing key or create new one
+          let key = Object.keys(TRIM_CANONICAL).find(k => TRIM_CANONICAL[k].toLowerCase() === code.toLowerCase());
+          if (!key) {
+            key = 'trim_' + code.toLowerCase().replace(/[^a-z0-9]/g, '');
+            TRIM_CANONICAL[key] = code;
+            TRIM_DATA[key] = { wo: wo || null, ss: ss || null, ssw: ssw || null };
+          } else {
+            TRIM_DATA[key] = { wo: wo || null, ss: ss || null, ssw: ssw || null };
+          }
+          
+          if (!TRIM_ALIASES[key]) TRIM_ALIASES[key] = [];
+          if (!TRIM_ALIASES[key].includes(code.toUpperCase())) {
+            TRIM_ALIASES[key].push(code.toUpperCase());
+          }
+        }
+
+        // Merge Operator rules
+        const operatorRules = rulesData.filter(r => r.rule_type === 'operator');
+        for (const rule of operatorRules) {
+          const { category, class: cls, threshold, below } = rule.rule_data;
+          if (!category || !cls || !threshold || !below) continue;
+          
+          const catKey = category.toLowerCase().includes('gate') ? 'gate' :
+                         category.toLowerCase().includes('globe') ? 'globe' :
+                         category.toLowerCase().includes('ball') ? 'ball' : null;
+          
+          if (catKey) {
+            const classNum = parseInt(cls);
+            if (!isNaN(classNum)) {
+              if (!OPERATOR_THRESHOLDS[catKey]) OPERATOR_THRESHOLDS[catKey] = {};
+              OPERATOR_THRESHOLDS[catKey][classNum] = parseFloat(threshold.replace(/[^0-9.]/g, ''));
+              
+              if (!OPERATOR_BELOW[catKey]) OPERATOR_BELOW[catKey] = {};
+              OPERATOR_BELOW[catKey][classNum] = below;
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load catalogue or rules:', err);
+    }
+  }
+
+  // Load user custom rules
+  let userCustomRules: any[] = [];
+  if (userId) {
+    const sb = getSupabase();
+    if (sb) {
+      const { data: customData } = await sb
+        .from('user_custom_rules')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('active', true)
+        .order('priority', { ascending: true });
+
+      if (customData) userCustomRules = customData;
+    }
+  }
 
   const result: ProcessResult = {
-    total_rows: data.length - 1,
+    total_rows: dataRows.length,
     processed: 0,
     not_manufactured: 0,
     flags: [],
-    processed_rows: []
+    processed_rows: [],
+    columnMap: columnMap,
+    format: 'multi_column'
   };
 
-  for (let i = 1; i < data.length; i++) {
-    const row = data[i];
+  // Helper — get value by detected column, fallback to fixed index
+  const get = (row: any[], field: string, fallback: number): string =>
+    String(row[columnMap[field] !== undefined ? columnMap[field] : fallback] || '');
+
+  for (let i = 0; i < dataRows.length; i++) {
+    const row = dataRows[i];
     
     // Skip completely empty rows
     if (!row || row.length === 0 || row.every(cell => !cell || String(cell).trim() === '')) continue;
 
     const rowData = {
-      item: colMap.item >= 0 ? row[colMap.item] : '',
-      desc: colMap.desc >= 0 ? String(row[colMap.desc] || '') : '',
-      spec: colMap.spec >= 0 ? String(row[colMap.spec] || '') : '',
-      rating: colMap.rating >= 0 ? String(row[colMap.rating] || '') : '',
-      body: colMap.body >= 0 ? String(row[colMap.body] || '') : '',
-      trim: colMap.trim >= 0 ? String(row[colMap.trim] || '') : '',
-      construct: colMap.construct >= 0 ? String(row[colMap.construct] || '') : '',
-      endType: colMap.endType >= 0 ? String(row[colMap.endType] || '') : '',
-      size: colMap.size >= 0 ? String(row[colMap.size] || '') : '',
-      qty: colMap.qty >= 0 ? row[colMap.qty] : ''
+      item:      get(row, 'item', 0),
+      desc:      get(row, 'desc', 1),
+      spec:      get(row, 'spec', 2),
+      rating:    get(row, 'rating', 3),
+      body:      get(row, 'body', 4),
+      trim:      get(row, 'trim', 7),
+      construct: get(row, 'construct', 8),
+      endType:   get(row, 'endType', 9),
+      size:      get(row, 'size', 11),
+      qty:       get(row, 'qty', 12),
     };
 
-    const { processedRow, flags, isNotMfg } = processSingleRow(rowData, i + 1);
+    const { processedRow, flags, isNotMfg } = processSingleRow(rowData, i + headerRowIndex + 2, catalogue, notMfgList, userCustomRules);
 
     if (isNotMfg) {
       result.not_manufactured++;
@@ -362,41 +558,137 @@ export function generateFuzzyMatches(desc: string): any[] {
 
 // --- Deterministic Rule Functions ---
 
-function detectValveType(desc: string): string {
-  if (/(GTV|GT\.V|G\/V|G\.V|GTW|GATE VALVE|WEDGE|SLAB GATE)/.test(desc)) return 'Gate Valve';
-  if (/(GLV|GL\.V|GL\/V|GBV|GLOBE VALVE)/.test(desc)) return 'Globe Valve';
-  if (/(BV|B\/V|BLV|BALL VALVE)/.test(desc)) return 'Ball Valve';
-  if (/(CHK|C\/V|NRV|CHECK VALVE|NON RETURN|SWING CHECK|LIFT CHECK)/.test(desc)) return 'Check Valve';
-  if (/(BFV|BTF|B\/FLY|BUTTERFLY)/.test(desc)) return 'Butterfly Valve';
-  if (/(PLV|PLUG VALVE)/.test(desc)) return 'Plug Valve';
-  if (/(STR|Y-TYPE|STRAINER)/.test(desc)) return 'Strainer';
-  if (/(DBB|DOUBLE BLOCK)/.test(desc)) return 'Double Block & Bleed';
-  return 'Unknown Valve';
+function normaliseText(text: string): string {
+  return String(text || '').toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function levenshtein(a: string, b: string): number {
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const matrix = Array(b.length + 1).fill(null).map(() => Array(a.length + 1).fill(null));
+  for (let i = 0; i <= a.length; i++) matrix[0][i] = i;
+  for (let j = 0; j <= b.length; j++) matrix[j][0] = j;
+  for (let j = 1; j <= b.length; j++) {
+    for (let i = 1; i <= a.length; i++) {
+      const indicator = a[i - 1] === b[j - 1] ? 0 : 1;
+      matrix[j][i] = Math.min(
+        matrix[j][i - 1] + 1,
+        matrix[j - 1][i] + 1,
+        matrix[j - 1][i - 1] + indicator
+      );
+    }
+  }
+  return matrix[b.length][a.length];
+}
+
+function resolveField(input: string, aliases: Record<string, string[]>, tokens: Record<string, string[]>, canonical: Record<string, string>): string | null {
+  const norm = normaliseText(input);
+  if (!norm) return null;
+
+  // Layer 1: Exact Alias Match
+  for (const [key, aliasList] of Object.entries(aliases)) {
+    if (aliasList.some(alias => norm.includes(normaliseText(alias)))) return key;
+  }
+
+  // Layer 2: Token Scoring
+  let bestTokenKey = null;
+  let maxScore = 0;
+  for (const [key, tokenList] of Object.entries(tokens)) {
+    const score = tokenList.filter(t => norm.includes(normaliseText(t))).length;
+    if (score > maxScore) { maxScore = score; bestTokenKey = key; }
+  }
+  if (bestTokenKey && maxScore > 0) return bestTokenKey;
+
+  // Layer 3: Levenshtein Distance
+  let bestLevKey = null;
+  let minDistance = Infinity;
+  for (const [key, canon] of Object.entries(canonical)) {
+    const dist = levenshtein(norm, normaliseText(canon));
+    const threshold = Math.max(norm.length, canon.length) * 0.4;
+    if (dist < threshold && dist < minDistance) {
+      minDistance = dist;
+      bestLevKey = key;
+    }
+  }
+  return bestLevKey;
+}
+
+const VALVE_ALIASES: Record<string, string[]> = {
+  gate:       ['GATE VALVE','GATE V/V','GATE VLV','GTV','WEDGE VALVE','SLAB GATE','KNIFE GATE'],
+  globe:      ['GLOBE VALVE','GLOBE V/V','GLOBE VLV','GLV','GBV'],
+  ball:       ['BALL VALVE','BALL V/V','BALL VLV','BV','FLOATING BALL','TRUNNION BALL','FBV','TMBV'],
+  check:      ['CHECK VALVE','CHECK V/V','CHK','NRV','NON RETURN','SWING CHECK','LIFT CHECK'],
+  dual_plate: ['DUAL PLATE','DP CHECK','WAFER CHECK'],
+  butterfly:  ['BUTTERFLY VALVE','BFV','BFLY'],
+  plug:       ['PLUG VALVE','PLV','PV'],
+  strainer:   ['STRAINER','Y STRAINER','BASKET STRAINER'],
+  dbb:        ['DBB','DOUBLE BLOCK AND BLEED']
+};
+
+const VALVE_TOKENS: Record<string, string[]> = {
+  gate:       ['GATE','GTW','WEDGE','SLAB','KNIFE'],
+  globe:      ['GLOBE','GLB'],
+  ball:       ['BALL','TRUNNION','FLOATING','TMBV','FBV'],
+  check:      ['CHECK','CHK','NRV','NON RETURN','SWING','LIFT'],
+  dual_plate: ['DUAL','WAFER','DP CHECK'],
+  butterfly:  ['BUTTERFLY','BFLY','BFV'],
+  plug:       ['PLUG','PLV'],
+  strainer:   ['STRAINER','Y-TYPE','BASKET'],
+  dbb:        ['DOUBLE BLOCK','DBB','BLEED']
+};
+
+const VALVE_CANONICAL: Record<string, string> = {
+  gate: 'GATE VALVE', globe: 'GLOBE VALVE', ball: 'BALL VALVE',
+  check: 'CHECK VALVE', dual_plate: 'DUAL PLATE CHECK VALVE', butterfly: 'BUTTERFLY VALVE',
+  plug: 'PLUG VALVE', strainer: 'STRAINER', dbb: 'DOUBLE BLOCK AND BLEED'
+};
+
+function detectValveType(desc: string, body = '', construct = ''): string {
+  const combined = [desc, body, construct].filter(Boolean).join(' ');
+  const resolved = resolveField(combined, VALVE_ALIASES, VALVE_TOKENS, VALVE_CANONICAL);
+  return resolved ? VALVE_CANONICAL[resolved] : 'Unknown Valve';
 }
 
 function parseSize(str: string): string | null {
-  if (!str || str === '' || str === 'undefined') return null;
+  if (!str) return null;
+  const norm = normaliseText(str);
   
-  // Fraction map — must handle these BEFORE trying parseFloat
+  const DN_TO_NPS: Record<number, number> = {
+    15: 0.5, 20: 0.75, 25: 1, 32: 1.25, 40: 1.5, 50: 2,
+    65: 2.5, 80: 3, 100: 4, 125: 5, 150: 6, 200: 8,
+    250: 10, 300: 12, 350: 14, 400: 16, 450: 18, 500: 20,
+    600: 24, 650: 26, 700: 28, 750: 30, 900: 36
+  };
+
+  const dnMatch = norm.match(/DN\s*(\d+)/);
+  if (dnMatch) {
+    const nps = DN_TO_NPS[parseInt(dnMatch[1])];
+    return nps ? String(nps) : null;
+  }
+
+  const npsMatch = norm.match(/NPS\s*(\d+(?:\.\d+)?)/) || norm.match(/(\d+(?:\.\d+)?)\s*NPS/);
+  if (npsMatch) return npsMatch[1];
+
+  const inchMatch = norm.match(/(\d+(?:\.\d+)?)\s*(?:INCH|IN)/);
+  if (inchMatch) return inchMatch[1];
+  
   const fractionMap: Record<string, number> = {
     '1/4': 0.25, '3/8': 0.375, '1/2': 0.5, '3/4': 0.75,
-    '1-1/4': 1.25, '1-1/2': 1.5, '1-3/4': 1.75, '2-1/2': 2.5,
-    '3-1/2': 3.5, '4-1/2': 4.5
+    '1 1/4': 1.25, '1 1/2': 1.5, '1 3/4': 1.75, '2 1/2': 2.5,
+    '3 1/2': 3.5, '4 1/2': 4.5
   };
   
-  // Strip inch symbol and whitespace
-  const clean = str.replace(/"/g, '').replace(/\s+/g, ' ').trim().toUpperCase();
-  
-  // Check fraction map first
   for (const [frac, val] of Object.entries(fractionMap)) {
-    if (clean === frac) return val.toString();
+    if (norm === frac || norm.includes(frac)) return val.toString();
   }
   
-  // Try plain number
-  const num = parseFloat(clean);
-  if (!isNaN(num) && num > 0 && num <= 100) return num.toString(); // 100" max real valve size
+  const numMatch = norm.match(/(\d+(?:\.\d+)?)/);
+  if (numMatch) {
+    const num = parseFloat(numMatch[1]);
+    if (num > 0 && num <= 100) return num.toString();
+  }
   
-  return null; // Could not parse — flag this row
+  return null;
 }
 
 function formatSize(numericSize: string | null): string {
@@ -413,8 +705,13 @@ function formatSize(numericSize: string | null): string {
 
 function parseClass(str: string): string {
   if (!str) return '';
-  const match = str.match(/(?:CLASS|CL|#|LB)?\s*(150|300|600|800|900|1500|2500)/i);
-  return match ? match[1] : '';
+  const norm = normaliseText(str);
+  const match = norm.match(/(?:CLASS|CL|ANSI|LB|LBS)\s*(\d{3,4})/) || norm.match(/(\d{3,4})\s*(?:CLASS|CL|ANSI|LB|LBS)/) || norm.match(/(\d{3,4})/);
+  if (match) {
+    const num = parseInt(match[1]);
+    if ([150, 300, 600, 800, 900, 1500, 2500].includes(num)) return String(num);
+  }
+  return '';
 }
 
 function resolveBallType(cls: string, size: string): string {
@@ -483,72 +780,114 @@ function getModel(type: string, size: string, cls: string, end: string): string 
   return '';
 }
 
-const MOC_MAP: Record<string, { resolved: string, cast: boolean }> = {
-  // Cast types — flag if size < 2"
-  'WCB': { resolved: 'ASTM A216 Gr.WCB', cast: true },
-  'A216 WCB': { resolved: 'ASTM A216 Gr.WCB', cast: true },
-  'WCC': { resolved: 'ASTM A216 Gr.WCC', cast: true },
-  'A216 WCC': { resolved: 'ASTM A216 Gr.WCC', cast: true },
-  'LCB': { resolved: 'ASTM A352 Gr.LCB', cast: true },
-  'A352 LCB': { resolved: 'ASTM A352 Gr.LCB', cast: true },
-  'CF8M': { resolved: 'ASTM A351 Gr.CF8M', cast: true },
-  'A351 CF8M': { resolved: 'ASTM A351 Gr.CF8M', cast: true },
-  // Forged types
-  'A105': { resolved: 'ASTM A105', cast: false },
-  'A105N': { resolved: 'ASTM A105N', cast: false },
-  'ASTM A105': { resolved: 'ASTM A105', cast: false },
-  'F316': { resolved: 'ASTM A182 Gr.F316', cast: false },
-  'SS316': { resolved: 'ASTM A182 Gr.F316', cast: false },
-  '316 SS': { resolved: 'ASTM A182 Gr.F316', cast: false },
-  'A182 F316': { resolved: 'ASTM A182 Gr.F316', cast: false },
-  'F304': { resolved: 'ASTM A182 Gr.F304', cast: false },
-  'SS304': { resolved: 'ASTM A182 Gr.F304', cast: false },
-  'F316L': { resolved: 'ASTM A182 Gr.F316L', cast: false },
-  'F304L': { resolved: 'ASTM A182 Gr.F304L', cast: false },
-  'LF2': { resolved: 'ASTM A350 Gr.LF2 CL.1', cast: false },
-  'A350 LF2': { resolved: 'ASTM A350 Gr.LF2 CL.1', cast: false },
-  'F44': { resolved: 'ASTM A182 Gr.F44', cast: false },
-  'CK3MCUN': { resolved: 'ASTM A182 Gr.F44', cast: false },
-  '254SMO': { resolved: 'ASTM A182 Gr.F44', cast: false },
-  '6MO': { resolved: 'ASTM A182 Gr.F44', cast: false },
-  'F51': { resolved: 'ASTM A182 Gr.F51', cast: false },
-  '2205': { resolved: 'ASTM A182 Gr.F51', cast: false },
-  'DUPLEX': { resolved: 'ASTM A182 Gr.F51', cast: false },
-  'F53': { resolved: 'ASTM A182 Gr.F53', cast: false },
-  'SUPER DUPLEX': { resolved: 'ASTM A182 Gr.F53', cast: false },
-  '2507': { resolved: 'ASTM A182 Gr.F53', cast: false },
-  'HASTELLOY': { resolved: 'ASTM B574 Gr.N10276', cast: false },
-  'C276': { resolved: 'ASTM B574 Gr.N10276', cast: false },
-  'HASTELLOY C276': { resolved: 'ASTM B574 Gr.N10276', cast: false },
-  'INCONEL 625': { resolved: 'ASTM B446 Gr.625', cast: false },
-  'ALLOY 625': { resolved: 'ASTM B446 Gr.625', cast: false },
-  'MONEL': { resolved: 'ASTM B164 Gr.N04400', cast: false },
-  'MONEL 400': { resolved: 'ASTM B164 Gr.N04400', cast: false },
-  'AL-BRONZE': { resolved: 'ASTM B62 (Bronze)', cast: false },
-  'AL-BR': { resolved: 'ASTM B62 (Bronze)', cast: false },
-  'B62': { resolved: 'ASTM B62 (Bronze)', cast: false },
+const MOC_ALIASES: Record<string, string[]> = {
+  wcb:    ['WCB','A216 WCB','CAST CARBON STEEL','CS'],
+  wcc:    ['WCC','A216 WCC'],
+  lcb:    ['LCB','A352 LCB','LOW TEMP CARBON STEEL','LTCS'],
+  lcc:    ['LCC','A352 LCC'],
+  cf8:    ['CF8','A351 CF8','SS304','304SS','STAINLESS STEEL 304'],
+  cf8m:   ['CF8M','A351 CF8M','SS316','316SS','STAINLESS STEEL 316'],
+  cf3:    ['CF3','A351 CF3','SS304L','304L'],
+  cf3m:   ['CF3M','A351 CF3M','SS316L','316L'],
+  a105:   ['A105','A105N','FORGED CARBON STEEL','FCS'],
+  lf2:    ['LF2','A350 LF2','FORGED LTCS'],
+  f304:   ['F304','A182 F304','FORGED 304'],
+  f316:   ['F316','A182 F316','FORGED 316'],
+  f51:    ['F51','DUPLEX','2205','A182 F51'],
+  f53:    ['F53','SUPER DUPLEX','2507','A182 F53'],
+  f55:    ['F55','A182 F55'],
+  inconel:['INCONEL','INC','ALLOY 625','ALLOY 825'],
+  monel:  ['MONEL','ALLOY 400'],
+  hastelloy:['HASTELLOY','ALLOY C276']
 };
 
-function getMOC(raw: string): { resolved: string | null, cast: boolean, flag?: string } {
-  let upper = raw.toUpperCase().trim();
-  
-  const findMatch = (text: string) => {
-    if (!text) return null;
-    // Direct lookup first
-    if (MOC_MAP[text]) return MOC_MAP[text];
-    // Partial match — check if text contains any key
-    for (const [key, val] of Object.entries(MOC_MAP)) {
-      if (text.includes(key)) return val;
-    }
-    return null;
-  };
+const MOC_TOKENS: Record<string, string[]> = {
+  wcb: ['WCB'], wcc: ['WCC'], lcb: ['LCB'], lcc: ['LCC'],
+  cf8: ['CF8','304'], cf8m: ['CF8M','316'], cf3: ['CF3','304L'], cf3m: ['CF3M','316L'],
+  a105: ['A105'], lf2: ['LF2'], f304: ['F304'], f316: ['F316'],
+  f51: ['F51','DUPLEX'], f53: ['F53','SUPER DUPLEX'], f55: ['F55'],
+  inconel: ['INCONEL'], monel: ['MONEL'], hastelloy: ['HASTELLOY']
+};
 
-  let match = findMatch(upper);
-  if (match) return match;
+const MOC_CANONICAL: Record<string, string> = {
+  wcb: 'A216 WCB', wcc: 'A216 WCC', lcb: 'A352 LCB', lcc: 'A352 LCC',
+  cf8: 'A351 CF8', cf8m: 'A351 CF8M', cf3: 'A351 CF3', cf3m: 'A351 CF3M',
+  a105: 'A105N', lf2: 'A350 LF2', f304: 'A182 F304', f316: 'A182 F316',
+  f51: 'A182 F51 (Duplex)', f53: 'A182 F53 (Super Duplex)', f55: 'A182 F55',
+  inconel: 'Inconel', monel: 'Monel', hastelloy: 'Hastelloy'
+};
 
-  // Not found — return yellow flag
-  return { resolved: null, cast: false, flag: `MOC not recognised: "${raw}"` };
+const MOC_CAST: Record<string, boolean> = {
+  wcb: true, wcc: true, lcb: true, lcc: true, cf8: true, cf8m: true, cf3: true, cf3m: true,
+  a105: false, lf2: false, f304: false, f316: false, f51: false, f53: false, f55: false,
+  inconel: false, monel: false, hastelloy: false
+};
+
+function getMOC(bodyText: string): { resolved: string | null, cast: boolean, flag: string | null } {
+  const resolvedKey = resolveField(bodyText, MOC_ALIASES, MOC_TOKENS, MOC_CANONICAL);
+  if (!resolvedKey) return { resolved: null, cast: false, flag: 'MOC not recognised' };
+  return { resolved: MOC_CANONICAL[resolvedKey], cast: MOC_CAST[resolvedKey], flag: null };
 }
+
+const TRIM_ALIASES: Record<string, string[]> = {
+  trim8: ['TRIM 8', 'F6', '13CR', '410'],
+  trim12: ['TRIM 12', '316', 'CF8M', 'F316'],
+  trim304: ['304', 'F304'],
+  trim316l: ['316L', 'F316L'],
+  trimf51: ['F51', '2205', 'DUPLEX'],
+  trimf53: ['F53', 'SUPER DUPLEX', '2507'],
+  trimf44: ['F44', 'CK3MCUN', '254SMO'],
+  trimhast: ['HASTELLOY', 'C276'],
+  triminc: ['INCONEL 625', 'ALLOY 625'],
+  trimmonel: ['MONEL'],
+  trimlf2: ['LF2', 'LCB'],
+  trima105: ['A105', 'WCB']
+};
+
+const TRIM_TOKENS: Record<string, string[]> = {
+  trim8: ['TRIM 8', 'F6', '13CR', '410'],
+  trim12: ['TRIM 12', '316', 'CF8M', 'F316'],
+  trim304: ['304', 'F304'],
+  trim316l: ['316L', 'F316L'],
+  trimf51: ['F51', '2205', 'DUPLEX'],
+  trimf53: ['F53', 'SUPER DUPLEX', '2507'],
+  trimf44: ['F44', 'CK3MCUN', '254SMO'],
+  trimhast: ['HASTELLOY', 'C276'],
+  triminc: ['INCONEL', '625'],
+  trimmonel: ['MONEL'],
+  trimlf2: ['LF2', 'LCB'],
+  trima105: ['A105', 'WCB']
+};
+
+const TRIM_CANONICAL: Record<string, string> = {
+  trim8: 'TRIM 8',
+  trim12: 'TRIM 12',
+  trim304: '304',
+  trim316l: '316L',
+  trimf51: 'F51',
+  trimf53: 'F53',
+  trimf44: 'F44',
+  trimhast: 'HASTELLOY',
+  triminc: 'INCONEL 625',
+  trimmonel: 'MONEL',
+  trimlf2: 'LF2',
+  trima105: 'A105'
+};
+
+const TRIM_DATA: Record<string, { wo: string | null, ss: string | null, ssw: string | null }> = {
+  trim8: { wo: 'F6 / F6 - T1', ss: 'F6 & Hardfaced - T8', ssw: 'Hardfaced (410) - T5' },
+  trim12: { wo: '316 - T10', ss: '316 and Hardfaced - T12', ssw: 'Hardfaced (316) - T16' },
+  trim304: { wo: '304 - T2', ss: '304 and Hardfaced - T51', ssw: 'Hardfaced (304) - T15' },
+  trim316l: { wo: '316L - T55', ss: '316L and Hardfaced - T56', ssw: 'Hardfaced (316L) - T57' },
+  trimf51: { wo: 'F51 - T79', ss: 'F51 and Hardfaced - T81', ssw: 'Hardfaced (F51) - T82' },
+  trimf53: { wo: 'F53 - T70', ss: 'F53 and Hardfaced - T71', ssw: 'Hardfaced (F53) - T72' },
+  trimf44: { wo: 'F44 - T97', ss: 'F44 & Hardfaced', ssw: 'Hardfaced (F44)' },
+  trimhast: { wo: 'Hastelloy C276 - T45', ss: 'Hastelloy C276 & Hardfaced - T46', ssw: 'Hardfaced (Hastelloy C276) - T47' },
+  triminc: { wo: 'Inconel 625 - T90', ss: 'Inconel 625 & Hardfaced - T9D', ssw: 'Hardfaced (625) - T98' },
+  trimmonel: { wo: 'Monel - T9', ss: 'Monel and Hardfaced - T11', ssw: 'Hardfaced (Monel)' },
+  trimlf2: { wo: null, ss: 'LF2/LCB & Hardfaced', ssw: 'Hardfaced (LF2/LCB)' },
+  trima105: { wo: null, ss: 'F6 & Hardfaced - T8', ssw: 'Hardfaced (410) - T5' }
+};
 
 function getTrim(valveType: string, size: string | null, trimRaw: string, mocRaw: string): string | null {
   // Trim only applies to Gate, Globe, Check valves
@@ -566,38 +905,13 @@ function getTrim(valveType: string, size: string | null, trimRaw: string, mocRaw
   const noStellite = /W\/?O\s*STELLITE|WITHOUT\s*STELLITE|NO\s*STELLITE|NON.STELLITE|PLAIN\s*TRIM|PLAIN\s*SEAT|W\/?O\s*HARDFACING/i.test(raw);
   const col = s < 2 ? 'ssw' : (noStellite ? 'wo' : 'ss');
   
-  const TRIM_TABLE: any[] = [
-    { keys: ['TRIM 8', 'F6', '13CR', '410'],
-      wo: 'F6 / F6 - T1', ss: 'F6 & Hardfaced - T8', ssw: 'Hardfaced (410) - T5' },
-    { keys: ['TRIM 12', '316', 'CF8M', 'F316'],
-      wo: '316 - T10', ss: '316 and Hardfaced - T12', ssw: 'Hardfaced (316) - T16' },
-    { keys: ['304', 'F304'],
-      wo: '304 - T2', ss: '304 and Hardfaced - T51', ssw: 'Hardfaced (304) - T15' },
-    { keys: ['316L', 'F316L'],
-      wo: '316L - T55', ss: '316L and Hardfaced - T56', ssw: 'Hardfaced (316L) - T57' },
-    { keys: ['F51', '2205', 'DUPLEX'],
-      wo: 'F51 - T79', ss: 'F51 and Hardfaced - T81', ssw: 'Hardfaced (F51) - T82' },
-    { keys: ['F53', 'SUPER DUPLEX', '2507'],
-      wo: 'F53 - T70', ss: 'F53 and Hardfaced - T71', ssw: 'Hardfaced (F53) - T72' },
-    { keys: ['F44', 'CK3MCUN', '254SMO'],
-      wo: 'F44 - T97', ss: 'F44 & Hardfaced', ssw: 'Hardfaced (F44)' },
-    { keys: ['HASTELLOY', 'C276'],
-      wo: 'Hastelloy C276 - T45', ss: 'Hastelloy C276 & Hardfaced - T46', ssw: 'Hardfaced (Hastelloy C276) - T47' },
-    { keys: ['INCONEL 625', 'ALLOY 625'],
-      wo: 'Inconel 625 - T90', ss: 'Inconel 625 & Hardfaced - T9D', ssw: 'Hardfaced (625) - T98' },
-    { keys: ['MONEL'],
-      wo: 'Monel - T9', ss: 'Monel and Hardfaced - T11', ssw: 'Hardfaced (Monel)' },
-    { keys: ['LF2', 'LCB'],
-      wo: null, ss: 'LF2/LCB & Hardfaced', ssw: 'Hardfaced (LF2/LCB)' },
-    { keys: ['A105', 'WCB'],
-      wo: null, ss: 'F6 & Hardfaced - T8', ssw: 'Hardfaced (410) - T5' },
-  ];
+  const resolvedKey = resolveField(raw, TRIM_ALIASES, TRIM_TOKENS, TRIM_CANONICAL);
   
-  for (const entry of TRIM_TABLE) {
-    if (entry.keys.some((k: string) => raw.includes(k))) {
-      return entry[col] || entry['ss'] || entry['ssw'];
-    }
+  if (resolvedKey && TRIM_DATA[resolvedKey]) {
+    const data = TRIM_DATA[resolvedKey];
+    return data[col as keyof typeof data] || data['ss'] || data['ssw'];
   }
+  
   return null; // Flag as unrecognised trim
 }
 
@@ -613,6 +927,18 @@ function getPacking(type: string, std: string): string {
   return 'Die moulded Graphite';
 }
 
+const OPERATOR_THRESHOLDS: Record<string, Record<number, number | null>> = {
+  gate: { 150: 12, 300: 12, 600: 10, 800: null, 900: 6, 1500: 3, 2500: 3 },
+  globe: { 150: 12, 300: 12, 600: 10, 800: null, 900: 6, 1500: 3, 2500: 3 },
+  ball: { 150: 6, 300: 6, 600: 4, 800: 3, 900: 3, 1500: 3, 2500: 3 },
+};
+
+const OPERATOR_BELOW: Record<string, Record<number, string>> = {
+  gate: { 150: 'Hand Wheel', 300: 'Hand Wheel', 600: 'Hand Wheel', 800: 'Hand Wheel', 900: 'Hand Wheel', 1500: 'Hand Wheel', 2500: 'Hand Wheel' },
+  globe: { 150: 'Hand Wheel', 300: 'Hand Wheel', 600: 'Hand Wheel', 800: 'Hand Wheel', 900: 'Hand Wheel', 1500: 'Hand Wheel', 2500: 'Hand Wheel' },
+  ball: { 150: 'Lever', 300: 'Lever', 600: 'Lever', 800: 'Lever', 900: 'Lever', 1500: 'Lever', 2500: 'Lever' },
+};
+
 function getOperator(valveType: string, size: string | null, classNumStr: string): string | null {
   const type = (valveType || '').toLowerCase();
   const s = size ? parseFloat(size) : null;
@@ -621,12 +947,6 @@ function getOperator(valveType: string, size: string | null, classNumStr: string
   if (type.includes('check')) return ''; // Always blank
   if (s === null || classNum === null) return null;
   
-  const thresholds: Record<string, Record<number, number | null>> = {
-    gate: { 150: 12, 300: 12, 600: 10, 800: null, 900: 6, 1500: 3, 2500: 3 },
-    globe: { 150: 12, 300: 12, 600: 10, 800: null, 900: 6, 1500: 3, 2500: 3 },
-    ball: { 150: 6, 300: 6, 600: 4, 800: 3, 900: 3, 1500: 3, 2500: 3 },
-  };
-  
   const isGate = type.includes('gate');
   const isGlobe = type.includes('globe');
   const isBall = type.includes('ball') || type.includes('trunnion') || type.includes('floating');
@@ -634,22 +954,43 @@ function getOperator(valveType: string, size: string | null, classNumStr: string
   const category = isGate ? 'gate' : isGlobe ? 'globe' : isBall ? 'ball' : null;
   if (!category) return null;
   
-  const threshold = thresholds[category]?.[classNum];
+  const threshold = OPERATOR_THRESHOLDS[category]?.[classNum];
+  const below = OPERATOR_BELOW[category]?.[classNum] || (isBall ? 'Lever' : 'Hand Wheel');
   
   // CLASS 800 gate/globe = always hand wheel
   if ((isGate || isGlobe) && classNum === 800) return 'Hand Wheel';
   
   if (threshold !== null && threshold !== undefined && s >= threshold) return 'Gear Unit; Locking arrangement';
-  return isBall ? 'Lever' : 'Hand Wheel';
+  return below;
 }
 
-function getEndDetail(end: string, desc: string): string {
-  const e = `${end} ${desc}`.toUpperCase();
-  if (/(RTJ)/.test(e)) return 'ASME B16.5 FE - RTJ';
-  if (/(THD|NPT|SCREWED)/.test(e)) return 'SE - NPT(F)';
-  if (/(SW|SOCKET WELD)/.test(e)) return 'SWE - CL3000';
-  if (/(BW|BUTT WELD)/.test(e)) return 'ASME B16.25 BWE';
-  return 'ASME B16.5 FERF / 125 - 250';
+const END_ALIASES: Record<string, string[]> = {
+  flanged: ['FLANGED','FLG','RF','FF','RTJ','RAISED FACE','FLANGE'],
+  bw:      ['BUTT WELD','BW','BWE','BUTTWELD'],
+  sw:      ['SOCKET WELD','SW','SWE','SOCKETWELD'],
+  npt:     ['THREADED','NPT','SCREWED','THD','BSP'],
+  wafer:   ['WAFER','WAFER TYPE'],
+  lug:     ['LUG','LUG TYPE','LUGGED']
+};
+
+const END_TOKENS: Record<string, string[]> = {
+  flanged: ['FLG','RF','RTJ'],
+  bw:      ['BW','BUTT'],
+  sw:      ['SW','SOCKET'],
+  npt:     ['NPT','THREADED'],
+  wafer:   ['WAFER'],
+  lug:     ['LUG']
+};
+
+const END_CANONICAL: Record<string, string> = {
+  flanged: 'Flanged', bw: 'Butt Weld', sw: 'Socket Weld',
+  npt: 'Threaded (NPT)', wafer: 'Wafer', lug: 'Lug'
+};
+
+function getEndDetail(endType: string, desc: string): string {
+  const combined = [endType, desc].filter(Boolean).join(' ');
+  const resolved = resolveField(combined, END_ALIASES, END_TOKENS, END_CANONICAL);
+  return resolved ? END_CANONICAL[resolved] : 'Flanged RF'; // Default
 }
 
 function getBolting(resolvedMOC: string | null): string | null {
@@ -672,13 +1013,70 @@ function getBolting(resolvedMOC: string | null): string | null {
   return null;
 }
 
-function calculateScore(row: ProcessedRow): number {
-  let score = 0;
-  if (row.valveType && row.valveType !== 'Unknown Valve') score += 50;
-  if (row.size) score += 30;
-  if (row.class) score += 30;
-  if (row.endDetail) score += 10;
-  if (row.moc && row.moc !== 'Unknown') score += 10;
-  if (row.trim) score += 10;
-  return Math.min(score, 100);
+function calculateScore(row: ProcessedRow, catalogue: any[]): number {
+  if (!catalogue || catalogue.length === 0) {
+    // Fallback if no catalogue is loaded
+    let score = 0;
+    if (row.valveType && row.valveType !== 'Unknown Valve') score += 50;
+    if (row.size) score += 30;
+    if (row.class) score += 30;
+    if (row.endDetail) score += 10;
+    if (row.moc && row.moc !== 'Unknown') score += 10;
+    if (row.trim) score += 10;
+    return Math.min(score, 100);
+  }
+
+  let bestScore = 0;
+  let bestMatchId = '';
+
+  for (const item of catalogue) {
+    let score = 0;
+    const desc = (item.description || '').toUpperCase();
+    const category = (item.category || '').toUpperCase();
+
+    // 1. Valve Type Match (50 points)
+    if (row.valveType && row.valveType !== 'Unknown Valve') {
+      const typeTokens = row.valveType.toUpperCase().split(' ');
+      if (typeTokens.some(t => desc.includes(t) || category.includes(t))) {
+        score += 50;
+      }
+    }
+
+    // 2. Size Match (20 points)
+    if (row.size) {
+      const sizeStr = row.size.replace('"', '').trim();
+      if (desc.includes(`${sizeStr}"`) || desc.includes(`${sizeStr} INCH`) || desc.includes(sizeStr)) {
+        score += 20;
+      }
+    }
+
+    // 3. Rating Match (15 points)
+    if (row.class) {
+      const classNum = row.class.replace('CLASS ', '').trim();
+      if (desc.includes(classNum) || desc.includes(`CL${classNum}`) || desc.includes(`CL ${classNum}`)) {
+        score += 15;
+      }
+    }
+
+    // 4. Material Match (15 points)
+    if (row.moc && row.moc !== 'Unknown') {
+      const mocTokens = row.moc.toUpperCase().split(' ');
+      // Check if at least one significant token matches
+      const significantTokens = mocTokens.filter(t => !['ASTM', 'GR', 'GR.', 'STEEL', 'ALLOY'].includes(t));
+      if (significantTokens.length > 0 && significantTokens.some(t => desc.includes(t))) {
+        score += 15;
+      }
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestMatchId = item.code || item.id;
+    }
+  }
+
+  if (bestScore >= 70) {
+    row.matchId = bestMatchId;
+  }
+  
+  return Math.min(bestScore, 100);
 }
