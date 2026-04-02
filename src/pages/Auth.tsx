@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Settings, Mail, Lock, Loader2, AlertCircle } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { useAuth } from '../contexts/AuthContext';
 
 export function Auth() {
   const [isLogin, setIsLogin] = useState(true);
@@ -10,6 +11,20 @@ export function Auth() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
+  const { accessPending, setAuthState, user } = useAuth();
+  
+  // We need a local state to clear the pending screen if user wants to go back to sign in
+  const [localAccessPending, setLocalAccessPending] = useState(false);
+
+  const isPending = accessPending || localAccessPending;
+
+  // Auto-redirect if already logged in
+  React.useEffect(() => {
+    if (user) {
+      console.log('User already logged in, redirecting to dashboard...');
+      navigate('/dashboard');
+    }
+  }, [user, navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -18,11 +33,20 @@ export function Auth() {
 
     try {
       if (isLogin) {
-        const { error } = await supabase.auth.signInWithPassword({
+        console.log('Attempting signInWithPassword...');
+        const { data, error } = await supabase.auth.signInWithPassword({
           email,
           password,
         });
+        console.log('signInWithPassword completed. Error:', error);
         if (error) throw error;
+        
+        if (data.session && data.user) {
+          console.log('Setting auth state manually before navigation...');
+          setAuthState(data.session, data.user);
+        }
+        
+        console.log('Navigating to dashboard...');
         navigate('/dashboard');
       } else {
         const { error } = await supabase.auth.signUp({
@@ -30,8 +54,7 @@ export function Auth() {
           password,
         });
         if (error) throw error;
-        // Depending on Supabase settings, email confirmation might be required
-        setError('Check your email for the confirmation link.');
+        setLocalAccessPending(true);
       }
     } catch (err: any) {
       setError(err.message || 'An error occurred during authentication.');
@@ -39,6 +62,35 @@ export function Auth() {
       setLoading(false);
     }
   };
+
+  if (isPending) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-900">
+        <div className="max-w-md w-full mx-auto p-8 bg-white dark:bg-slate-800 rounded-2xl shadow-lg text-center space-y-4">
+          <div className="w-16 h-16 bg-yellow-100 dark:bg-yellow-900/30 rounded-full flex items-center justify-center mx-auto">
+            <span className="text-3xl">⏳</span>
+          </div>
+          <h2 className="text-xl font-bold text-slate-900 dark:text-white">Access Pending</h2>
+          <p className="text-slate-600 dark:text-slate-400 text-sm">
+            Your account has been registered. Please wait for the administrator to approve your access.
+            You will be notified once access is granted.
+          </p>
+          <p className="text-xs text-slate-400">Registered email: {email}</p>
+          <button
+            onClick={() => {
+              setLocalAccessPending(false);
+              // We can't easily clear the context's accessPending here without adding a method to context,
+              // but reloading or just letting the user sign in again works.
+              window.location.reload();
+            }}
+            className="text-sm text-purple-600 hover:underline"
+          >
+            Back to Sign In
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-[calc(100vh-4rem)] flex items-center justify-center p-4 relative overflow-hidden">

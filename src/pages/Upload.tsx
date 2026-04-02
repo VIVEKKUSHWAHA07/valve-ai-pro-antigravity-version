@@ -1,10 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Play, CheckCircle2, XCircle, Loader2, Upload as UploadIcon, FileSpreadsheet, AlertTriangle, Download, Settings2, ArrowRight } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 
 export function Upload() {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState('');
@@ -12,107 +14,28 @@ export function Upload() {
   const [file, setFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [showMapping, setShowMapping] = useState(false);
-  const [headers, setHeaders] = useState<string[]>([]);
-  const [columnMap, setColumnMap] = useState<Record<string, number>>({});
-  
-  const systemFields = [
-    { key: 'desc', label: 'Item Description' },
-    { key: 'size', label: 'Size' },
-    { key: 'rating', label: 'Rating / Class' },
-    { key: 'body', label: 'Body / MOC' },
-    { key: 'trim', label: 'Trim' },
-    { key: 'endType', label: 'End Type' },
-    { key: 'construct', label: 'Construction' },
-    { key: 'qty', label: 'Quantity' }
-  ];
+  const checkUsageLimit = async (): Promise<boolean> => {
+    if (!user) return false;
+    const { data: usage } = await supabase
+      .from('user_usage')
+      .select('*')
+      .eq('user_id', user.id)
+      .single();
 
-  // Load saved mapping on mount
-  useEffect(() => {
-    const loadSavedMapping = async () => {
-      if (!user) return;
-      try {
-        const { data, error } = await supabase
-          .from('engine_rules')
-          .select('rule_data')
-          .eq('user_id', user.id)
-          .eq('rule_type', 'column_mapping')
-          .eq('rule_key', 'default')
-          .single();
-          
-        if (data && data.rule_data) {
-          // We'll use this as a base when headers are extracted
-          // But we can't apply it yet because we don't know the header indices of the new file
-        }
-      } catch (err) {
-        console.error('Failed to load saved mapping', err);
-      }
-    };
-    loadSavedMapping();
-  }, [user]);
+    if (!usage) return true;
 
-  const handleExtractHeaders = async () => {
-    if (!file) return;
-    setLoading(true);
-    setError('');
-    setResult(null);
-    
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-      
-      const res = await fetch('/api/extract-headers', {
-        method: 'POST',
-        body: formData
-      });
-      
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to extract headers');
-      
-      setHeaders(data.headers);
-      
-      // Try to load saved mapping to match by header name
-      let savedMappingByName: Record<string, string> = {};
-      if (user) {
-        const { data: savedData } = await supabase
-          .from('engine_rules')
-          .select('rule_data')
-          .eq('user_id', user.id)
-          .eq('rule_type', 'column_mapping')
-          .eq('rule_key', 'default')
-          .single();
-          
-        if (savedData && savedData.rule_data) {
-          savedMappingByName = savedData.rule_data;
-        }
-      }
+    const limit =
+      usage.plan === 'free' ? 3 :
+      usage.plan === 'starter' ? 20 :
+      usage.plan === 'professional' ? 999 :
+      usage.plan === 'custom' ? (usage.custom_run_limit || 10) :
+      3;
 
-      // Initialize column map
-      const initialMap: Record<string, number> = {};
-      
-      systemFields.forEach(field => {
-        // 1. Try saved mapping by name
-        if (savedMappingByName[field.key]) {
-          const idx = data.headers.indexOf(savedMappingByName[field.key]);
-          if (idx !== -1) {
-            initialMap[field.key] = idx;
-            return;
-          }
-        }
-        
-        // 2. Try auto-detected mapping
-        if (data.detectedMap && data.detectedMap[field.key] !== undefined) {
-          initialMap[field.key] = data.detectedMap[field.key];
-        }
-      });
-      
-      setColumnMap(initialMap);
-      setShowMapping(true);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
+    if (usage.runs_this_month >= limit) {
+      setError(`Monthly limit reached (${limit} runs on ${usage.plan} plan). Please upgrade to continue.`);
+      return false;
     }
+    return true;
   };
 
   const handleProcessRFQ = async () => {
@@ -121,38 +44,50 @@ export function Upload() {
     setError('');
     
     try {
-      // Save mapping for future use (save by header name, not index)
-      if (user) {
-        const mappingByName: Record<string, string> = {};
-        Object.entries(columnMap).forEach(([key, idx]) => {
-          if (idx !== undefined && idx !== -1 && headers[idx]) {
-            mappingByName[key] = headers[idx];
-          }
-        });
-        
-        await supabase.from('engine_rules').upsert({
-          user_id: user.id,
-          rule_type: 'column_mapping',
-          rule_key: 'default',
-          rule_data: mappingByName
-        }, { onConflict: 'rule_type,rule_key,user_id' });
+      const canProceed = await checkUsageLimit();
+      if (!canProceed) {
+        setLoading(false);
+        return;
       }
 
       const formData = new FormData();
       formData.append('file', file);
       if (user) formData.append('user_id', user.id);
-      formData.append('columnMap', JSON.stringify(columnMap));
       
       const res = await fetch('/api/upload-rfq', {
         method: 'POST',
         body: formData
       });
       
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to process file');
-      
-      setResult(data);
-      setShowMapping(false);
+      const contentType = res.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to process file');
+        setResult(data);
+
+        if (user) {
+          // Save to processing_history with download data
+          await supabase.from('processing_history').insert({
+            user_id: user.id,
+            filename: file.name,
+            total_rows: data.total_rows,
+            processed_rows: data.processed,
+            not_manufactured_count: data.not_manufactured,
+            flags_count: data.flags?.length || 0,
+            status: data.flags?.length > 0 ? 'Review Needed' : 'Completed',
+            download_data: data.download_url,
+            catalogue_version: 'v1'
+          });
+
+          // Increment usage counter
+          await supabase.rpc('increment_usage', { p_user_id: user.id });
+        }
+
+      } else {
+        const text = await res.text();
+        console.error('Non-JSON response:', text.substring(0, 200));
+        throw new Error(`Server returned an unexpected response (${res.status}). Please try again.`);
+      }
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -170,47 +105,14 @@ export function Upload() {
     document.body.removeChild(a);
   };
 
-  const handleMappingChange = (fieldKey: string, colIdxStr: string) => {
-    const colIdx = parseInt(colIdxStr, 10);
-    setColumnMap(prev => {
-      const newMap = { ...prev };
-      if (isNaN(colIdx) || colIdx === -1) {
-        delete newMap[fieldKey];
-      } else {
-        newMap[fieldKey] = colIdx;
-      }
-      return newMap;
-    });
-  };
-
-  const renderMappingRow = (field: { key: string, label: string }) => {
-    const colIdx = columnMap[field.key];
-    const isMapped = colIdx !== undefined && colIdx !== -1;
-    
-    return (
-      <tr key={field.key} className="border-b border-slate-200 dark:border-slate-800/50 last:border-0">
-        <td className="py-3 px-4 font-medium text-slate-700 dark:text-slate-300">{field.label}</td>
-        <td className="py-3 px-4 text-slate-600 dark:text-slate-400">
-          <select 
-            value={isMapped ? colIdx : -1}
-            onChange={(e) => handleMappingChange(field.key, e.target.value)}
-            className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#00A8FF]/50 outline-none"
-          >
-            <option value={-1}>-- Not Mapped --</option>
-            {headers.map((h, i) => (
-              <option key={i} value={i}>{h || `Column ${i + 1}`}</option>
-            ))}
-          </select>
-        </td>
-        <td className="py-3 px-4 text-center">
-          {isMapped ? <CheckCircle2 className="w-5 h-5 text-emerald-500 mx-auto" /> : <span className="text-slate-400">-</span>}
-        </td>
-      </tr>
-    );
-  };
-
   return (
     <div className="max-w-7xl mx-auto mt-12 px-6 space-y-10 pb-20">
+      <button 
+        onClick={() => navigate(-1)}
+        className="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 mb-4"
+      >
+        ← Back
+      </button>
       <header className="text-center space-y-4 mb-16">
         <h2 className="text-4xl md:text-5xl font-display font-bold tracking-tight text-slate-900 dark:text-white">
           ValveIQ <span className="text-transparent bg-clip-text bg-gradient-to-r from-[#00A8FF] to-blue-400">Pro</span>
@@ -262,12 +164,12 @@ export function Upload() {
         </div>
 
         <button 
-          onClick={handleExtractHeaders}
+          onClick={handleProcessRFQ}
           disabled={loading || !file}
           className="mt-8 w-full flex items-center justify-center gap-2 bg-gradient-to-r from-[#00A8FF] to-[#008DE6] hover:from-[#008DE6] hover:to-[#0070B8] text-white px-6 py-3.5 rounded-xl font-semibold transition-all shadow-[0_0_20px_rgba(0,168,255,0.3)] hover:shadow-[0_0_30px_rgba(0,168,255,0.5)] disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none"
         >
-          {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Settings2 className="w-5 h-5" />}
-          EXTRACT HEADERS
+          {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Play className="w-5 h-5" />}
+          PROCESS RFQ
         </button>
       </div>
 
@@ -281,55 +183,7 @@ export function Upload() {
         </div>
       )}
 
-      {showMapping && (
-        <div className="bg-white dark:bg-[#0A1120]/90 backdrop-blur-xl p-8 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-lg animate-in fade-in slide-in-from-bottom-4 duration-500">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="p-2 rounded-lg bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-100 dark:border-emerald-500/20">
-              <Settings2 className="w-5 h-5 text-emerald-500" />
-            </div>
-            <div>
-              <h3 className="text-xl font-display font-bold text-slate-900 dark:text-white tracking-wide">Format Detected</h3>
-              <p className="text-sm text-slate-500 dark:text-slate-400">
-                Please map the columns to the system fields.
-              </p>
-            </div>
-          </div>
-
-          <div className="overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800/50 mb-8">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-slate-50 dark:bg-slate-800/50 text-slate-600 dark:text-slate-400 font-semibold">
-                <tr>
-                  <th className="py-3 px-4 border-b border-slate-200 dark:border-slate-800/50">Field</th>
-                  <th className="py-3 px-4 border-b border-slate-200 dark:border-slate-800/50">Detected Column</th>
-                  <th className="py-3 px-4 border-b border-slate-200 dark:border-slate-800/50 text-center">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200 dark:divide-slate-800/50">
-                {systemFields.map(field => renderMappingRow(field))}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="flex flex-col sm:flex-row gap-4 justify-end">
-            <button 
-              onClick={() => setShowMapping(false)}
-              className="px-6 py-3 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-semibold text-slate-700 dark:text-slate-200 transition-colors"
-            >
-              Cancel
-            </button>
-            <button 
-              onClick={handleProcessRFQ}
-              disabled={loading}
-              className="px-6 py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-sm font-semibold transition-colors flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Process RFQ'}
-              <ArrowRight className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {result && !showMapping && (
+      {result && (
         <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
           
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">

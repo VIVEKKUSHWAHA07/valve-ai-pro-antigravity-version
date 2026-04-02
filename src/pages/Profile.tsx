@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { User, Building2, Briefcase, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
 
 export function Profile() {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,6 +63,12 @@ export function Profile() {
 
   return (
     <div className="max-w-3xl mx-auto mt-12 px-6 pb-20">
+      <button 
+        onClick={() => navigate(-1)}
+        className="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 mb-4"
+      >
+        ← Back
+      </button>
       <div className="mb-10">
         <h1 className="text-3xl font-display font-bold text-slate-900 dark:text-white mb-2">Profile Settings</h1>
         <p className="text-slate-600 dark:text-slate-400">Manage your account details and preferences.</p>

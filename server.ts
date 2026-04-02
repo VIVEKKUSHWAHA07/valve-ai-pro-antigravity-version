@@ -156,4 +156,14 @@ async function startServer() {
   });
 }
 
+// Global error handler to ensure JSON responses for API routes
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (req.path.startsWith('/api/')) {
+    console.error('API Error:', err);
+    res.status(500).json({ error: err.message || 'Internal Server Error' });
+  } else {
+    next(err);
+  }
+});
+
 startServer();

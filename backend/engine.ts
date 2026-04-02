@@ -79,40 +79,103 @@ export function detectColumns(headers: any[]): Record<string, number> {
 
 export function processSingleRow(rowData: any, rowIndex: number = 1, catalogue: any[] = [], notMfgList: string[] = ['Butterfly Valve', 'Plug Valve', 'Strainer', 'Double Block & Bleed'], userCustomRules: any[] = []): { processedRow: ProcessedRow, flags: Flag[], isNotMfg: boolean } {
   const flags: Flag[] = [];
-  const combinedDesc = `${rowData.desc} ${rowData.body} ${rowData.endType} ${rowData.construct}`.toUpperCase();
+  
+  // Handle single column description format
+  let desc = '';
+  let isSingleColumn = false;
+  if (Array.isArray(rowData) && rowData.length === 1) {
+    desc = String(rowData[0] || '');
+    isSingleColumn = true;
+  } else if (typeof rowData === 'object' && rowData !== null && Object.keys(rowData).length === 1) {
+    desc = String(Object.values(rowData)[0] || '');
+    isSingleColumn = true;
+  } else if (typeof rowData === 'string') {
+    desc = rowData;
+    isSingleColumn = true;
+  } else {
+    desc = rowData.desc || '';
+  }
+
+  const combinedDesc = isSingleColumn ? desc.toUpperCase().replace(/\s+/g, ' ').trim() : `${rowData.desc} ${rowData.body} ${rowData.endType} ${rowData.construct}`.toUpperCase();
 
   // 1. Detect Valve Type
-  let valveType = detectValveType(rowData.desc, rowData.body, rowData.construct);
+  let valveType = '';
+  if (isSingleColumn) {
+    valveType = combinedDesc.split(',')[0].trim();
+  } else {
+    valveType = detectValveType(rowData.desc, rowData.body, rowData.construct);
+  }
+  
   let isNotMfg = false;
 
-  if (notMfgList.includes(valveType)) {
+  if (notMfgList.includes(valveType) || notMfgList.some(nm => valveType.toLowerCase().includes(nm.toLowerCase()))) {
     isNotMfg = true;
   }
 
   // 2. Detect Size & Class
-  let size = parseSize(rowData.size);
-  let pressureClass = parseClass(rowData.rating);
+  let size: string | null = null;
+  let pressureClass: string | null = null;
 
-  if (size && parseFloat(size) > 100) {
+  if (isSingleColumn) {
+    // Size is usually not in the description for this specific RFQ format
     flags.push({
       row: rowIndex,
       field: 'Size',
-      message: '? Size could not be parsed — check RFQ column',
-      type: 'critical'
+      message: '? Not found — check RFQ',
+      type: 'warning'
     });
-    size = null;
+
+    const classMatch = combinedDesc.match(/(?:CLASS|CL|RATING\s*:?|#)\s*(150|300|600|800|900|1500|2500)/i)
+      || combinedDesc.match(/(150|300|600|800|900|1500|2500)\s*(?:#|LB|CLASS)/i)
+      || combinedDesc.match(/3000#|3000\s*LB/i);
+    
+    if (classMatch) {
+      if (classMatch[0].includes('3000')) pressureClass = '800';
+      else pressureClass = classMatch[1];
+    } else {
+      flags.push({
+        row: rowIndex,
+        field: 'Class',
+        message: '? Not found — check RFQ',
+        type: 'warning'
+      });
+    }
+  } else {
+    size = parseSize(rowData.size);
+    pressureClass = parseClass(rowData.rating);
+
+    if (size && parseFloat(size) > 100) {
+      flags.push({
+        row: rowIndex,
+        field: 'Size',
+        message: '? Size could not be parsed — check RFQ column',
+        type: 'critical'
+      });
+      size = null;
+    }
   }
 
   // 3. Resolve Sub-type (Ball/Check)
-  if (valveType === 'Ball Valve') {
-    valveType = resolveBallType(pressureClass || '', size || '');
-  } else if (valveType === 'Check Valve') {
-    valveType = resolveCheckType(size || '');
+  if (valveType.includes('BALL VALVE') || valveType === 'Ball Valve') {
+    if (isSingleColumn) {
+      if (combinedDesc.includes('FLOATING BALL') || combinedDesc.includes('FLOAT BALL')) valveType = 'Floating Ball Valve';
+      else if (combinedDesc.includes('TRUNNION') || combinedDesc.includes('TRUNNION MOUNTED')) valveType = 'Trunnion Mounted Ball Valve';
+    } else {
+      valveType = resolveBallType(pressureClass || '', size || '');
+    }
+  } else if (valveType.includes('CHECK VALVE') || valveType === 'Check Valve') {
+    if (isSingleColumn) {
+      if (combinedDesc.includes('SWING CHECK') || combinedDesc.includes('SWING TYPE')) valveType = 'Swing Check Valve';
+      else if (combinedDesc.includes('DUAL PLATE') || combinedDesc.includes('DOUBLE PLATE') || combinedDesc.includes('DP CHECK')) valveType = 'Dual Plate Check Valve';
+      else if (combinedDesc.includes('LIFT CHECK') || combinedDesc.includes('PISTON')) valveType = 'Lift Check Valve';
+    } else {
+      valveType = resolveCheckType(size || '');
+    }
   }
 
   const processedRow: ProcessedRow = {
     valveType: isNotMfg ? valveType : valveType,
-    size: formatSize(size),
+    size: isSingleColumn ? '' : formatSize(size),
     class: pressureClass ? `CLASS ${pressureClass}` : '',
     standard: '',
     model: '',
@@ -137,41 +200,85 @@ export function processSingleRow(rowData: any, rowIndex: number = 1, catalogue: 
     });
   } else {
     // 4. Standard
-    processedRow.standard = getStandard(valveType, size, pressureClass || '') || '';
+    if (isSingleColumn) {
+      const dcMatch = combinedDesc.match(/DESIGN\s*CODE\s*:?\s*([A-Z0-9\s\.]+?)(?:,|$)/);
+      if (dcMatch) processedRow.standard = dcMatch[1].trim();
+    } else {
+      processedRow.standard = getStandard(valveType, size, pressureClass || '') || '';
+    }
     
     // 5. Model
-    processedRow.model = getModel(valveType, size || '', pressureClass || '', rowData.endType);
+    if (isSingleColumn) {
+      if (combinedDesc.includes('PRESSURE SEAL')) processedRow.model = 'Pressure Seal';
+      else if (combinedDesc.includes('BOLTED BONNET') || combinedDesc.includes('SPLIT BODY') || combinedDesc.includes('BOLTED')) processedRow.model = 'Bolted Bonnet';
+    } else {
+      processedRow.model = getModel(valveType, size || '', pressureClass || '', rowData.endType);
+    }
     
     // 6. MOC
-    const mocResult = getMOC(rowData.body);
-    processedRow.moc = mocResult.resolved || 'Unknown';
-    if (mocResult.flag) {
-      flags.push({
-        row: rowIndex,
-        field: 'MOC',
-        message: mocResult.flag,
-        type: 'warning'
-      });
-    }
-    if (mocResult.cast && size && parseFloat(size) < 2) {
-      flags.push({
-        row: rowIndex,
-        field: 'MOC',
-        message: 'Cast MOC not allowed for size < 2"',
-        type: 'critical'
-      });
+    if (isSingleColumn) {
+      const MOC_PATTERNS = [
+        { pattern: /A182\s*F\s*316(?:L)?(?!\s*STEM)(?!\s*BALL)/i, moc: 'F316' },
+        { pattern: /A351\s*CF8M/i, moc: 'CF8M' },
+        { pattern: /A216\s*WCB/i, moc: 'WCB' },
+        { pattern: /A105N/i, moc: 'A105N' },
+        { pattern: /\bA105\b/i, moc: 'A105' },
+        { pattern: /A182\s*F304(?!L)/i, moc: 'F304' },
+        { pattern: /A182\s*F316L/i, moc: 'F316L' },
+        { pattern: /A182\s*F51|2205|DUPLEX/i, moc: 'F51' },
+        { pattern: /A182\s*F53|SUPER\s*DUPLEX|2507/i, moc: 'F53' },
+        { pattern: /HASTELLOY|C276/i, moc: 'HASTELLOY' },
+        { pattern: /LF2|A350\s*LF2/i, moc: 'LF2' },
+        { pattern: /\bWCB\b/i, moc: 'WCB' },
+      ];
+
+      const bodyMatch = combinedDesc.match(/([A-Z0-9\s\/]+?)\s*BODY/);
+      if (bodyMatch) {
+        const bodyContext = bodyMatch[1] + ' BODY';
+        for (const { pattern, moc } of MOC_PATTERNS) {
+          if (pattern.test(bodyContext)) { processedRow.moc = moc; break; }
+        }
+      }
+      if (!processedRow.moc) {
+        for (const { pattern, moc } of MOC_PATTERNS) {
+          if (pattern.test(combinedDesc)) { processedRow.moc = moc; break; }
+        }
+      }
+    } else {
+      const mocResult = getMOC(rowData.body);
+      processedRow.moc = mocResult.resolved || 'Unknown';
+      if (mocResult.flag) {
+        flags.push({
+          row: rowIndex,
+          field: 'MOC',
+          message: mocResult.flag,
+          type: 'warning'
+        });
+      }
+      if (mocResult.cast && size && parseFloat(size) < 2) {
+        flags.push({
+          row: rowIndex,
+          field: 'MOC',
+          message: 'Cast MOC not allowed for size < 2"',
+          type: 'critical'
+        });
+      }
     }
 
     // 7. Trim
-    const trimResult = getTrim(valveType, size, rowData.trim, rowData.body);
-    processedRow.trim = trimResult || '';
-    if (!trimResult && !valveType.includes('Ball') && !isNotMfg) {
-      flags.push({
-        row: rowIndex,
-        field: 'Trim',
-        message: 'Trim not recognised',
-        type: 'warning'
-      });
+    if (isSingleColumn) {
+      processedRow.trim = getTrim(valveType, null, combinedDesc, null) || 'Standard Trim';
+    } else {
+      const trimResult = getTrim(valveType, size, rowData.trim, rowData.body);
+      processedRow.trim = trimResult || '';
+      if (!trimResult && !valveType.includes('Ball') && !isNotMfg) {
+        flags.push({
+          row: rowIndex,
+          field: 'Trim',
+          message: 'Trim not recognised',
+          type: 'warning'
+        });
+      }
     }
 
     // 8. Gasket
@@ -184,7 +291,16 @@ export function processSingleRow(rowData: any, rowIndex: number = 1, catalogue: 
     processedRow.operator = getOperator(valveType, size, pressureClass || '') || '';
 
     // 11. End Detail
-    processedRow.endDetail = getEndDetail(rowData.endType, combinedDesc);
+    if (isSingleColumn) {
+      if (combinedDesc.includes('RTJ') || combinedDesc.includes('RING TYPE JOINT')) processedRow.endDetail = 'RTJ';
+      else if (combinedDesc.includes('THREADED') || combinedDesc.includes('NPTF') || combinedDesc.includes('NPT')) processedRow.endDetail = 'THD';
+      else if (combinedDesc.includes('SOCKET WELD') || combinedDesc.includes('SWE') || combinedDesc.includes('S.W')) processedRow.endDetail = 'SW';
+      else if (combinedDesc.includes('BUTT WELD') || combinedDesc.includes('BWE') || combinedDesc.includes('B.W')) processedRow.endDetail = 'BW';
+      else if (combinedDesc.includes('RF') || combinedDesc.includes('RAISED FACE') || combinedDesc.includes('FLANGED')) processedRow.endDetail = 'FLG';
+      else processedRow.endDetail = 'FLG'; // default
+    } else {
+      processedRow.endDetail = getEndDetail(rowData.endType, combinedDesc);
+    }
 
     // 12. Bolting
     processedRow.bolting = getBolting(processedRow.moc) || 'Standard Bolting';
@@ -253,18 +369,52 @@ export async function processRFQ(fileBuffer: Buffer, userId?: string, filename?:
     throw new Error('Excel file is empty or missing headers');
   }
 
-  // Find actual header row (skip blank rows at top)
+  // Phase 1: Detect format once
   let headerRowIndex = 0;
+  let isSingleColumn = false;
+  
+  // Find header row for multi-column format
+  let foundHeaders = false;
   for (let i = 0; i < Math.min(10, data.length); i++) {
-    const nonEmpty = data[i].filter(c => c && String(c).trim()).length;
-    if (nonEmpty >= 3) { headerRowIndex = i; break; }
+    const rowStr = data[i].join(' ').toLowerCase();
+    if (rowStr.includes('desc') || rowStr.includes('item') || rowStr.includes('valve')) {
+      headerRowIndex = i;
+      foundHeaders = true;
+      break;
+    }
   }
 
-  const dataRows = data.slice(headerRowIndex + 1);
+  if (!foundHeaders) {
+    // Check if it's likely a single-column format
+    // A single column format usually has long text in the first column and empty subsequent columns
+    let singleColumnCount = 0;
+    let multiColumnCount = 0;
+    
+    for (let i = 0; i < Math.min(20, data.length); i++) {
+      const row = data[i];
+      const nonEmptyCells = row.filter(c => c && String(c).trim() !== '');
+      if (nonEmptyCells.length === 1 && String(nonEmptyCells[0]).length > 20) {
+        singleColumnCount++;
+      } else if (nonEmptyCells.length > 1) {
+        multiColumnCount++;
+      }
+    }
 
-  // Phase 1: Detect format once
-  const headers = data[headerRowIndex] as any[];
-  const columnMap = customColumnMap || detectColumns(headers);
+    if (singleColumnCount > multiColumnCount) {
+      isSingleColumn = true;
+      headerRowIndex = -1; // No headers to skip
+    } else {
+      // Fallback if no keywords found but looks multi-column
+      for (let i = 0; i < Math.min(10, data.length); i++) {
+        const nonEmpty = data[i].filter(c => c && String(c).trim()).length;
+        if (nonEmpty >= 3) { headerRowIndex = i; break; }
+      }
+    }
+  }
+
+  const dataRows = isSingleColumn ? data : data.slice(headerRowIndex + 1);
+  const headers = isSingleColumn ? [] : (data[headerRowIndex] as any[]);
+  const columnMap = isSingleColumn ? {} : (customColumnMap || detectColumns(headers));
 
   // Fetch product catalogue and rules
   let catalogue: any[] = [];
@@ -416,20 +566,25 @@ export async function processRFQ(fileBuffer: Buffer, userId?: string, filename?:
     // Skip completely empty rows
     if (!row || row.length === 0 || row.every(cell => !cell || String(cell).trim() === '')) continue;
 
-    const rowData = {
-      item:      get(row, 'item', 0),
-      desc:      get(row, 'desc', 1),
-      spec:      get(row, 'spec', 2),
-      rating:    get(row, 'rating', 3),
-      body:      get(row, 'body', 4),
-      trim:      get(row, 'trim', 7),
-      construct: get(row, 'construct', 8),
-      endType:   get(row, 'endType', 9),
-      size:      get(row, 'size', 11),
-      qty:       get(row, 'qty', 12),
-    };
+    let rowData: any;
+    if (isSingleColumn) {
+      rowData = row;
+    } else {
+      rowData = {
+        item:      get(row, 'item', 0),
+        desc:      get(row, 'desc', 1),
+        spec:      get(row, 'spec', 2),
+        rating:    get(row, 'rating', 3),
+        body:      get(row, 'body', 4),
+        trim:      get(row, 'trim', 7),
+        construct: get(row, 'construct', 8),
+        endType:   get(row, 'endType', 9),
+        size:      get(row, 'size', 11),
+        qty:       get(row, 'qty', 12),
+      };
+    }
 
-    const { processedRow, flags, isNotMfg } = processSingleRow(rowData, i + headerRowIndex + 2, catalogue, notMfgList, userCustomRules);
+    const { processedRow, flags, isNotMfg } = processSingleRow(rowData, i + (isSingleColumn ? 1 : headerRowIndex + 2), catalogue, notMfgList, userCustomRules);
 
     if (isNotMfg) {
       result.not_manufactured++;

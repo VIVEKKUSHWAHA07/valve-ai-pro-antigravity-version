@@ -5,7 +5,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 
 export function Dashboard() {
-  const { user } = useAuth();
+  const { user, accessPending, accessDenied } = useAuth();
   const [isLoading, setIsLoading] = useState(true);
   const [statsData, setStatsData] = useState({
     totalProcessed: 0,
@@ -71,6 +71,28 @@ export function Dashboard() {
 
   return (
     <div className="max-w-7xl mx-auto mt-8 px-6 space-y-8 pb-20">
+      {/* Access Restricted Banner */}
+      {(accessPending || accessDenied) && (
+        <div className="bg-yellow-50 dark:bg-yellow-900/30 border-l-4 border-yellow-400 p-4 rounded-r-lg shadow-sm">
+          <div className="flex items-start">
+            <div className="flex-shrink-0">
+              <AlertTriangle className="h-5 w-5 text-yellow-400" />
+            </div>
+            <div className="ml-3">
+              <h3 className="text-sm font-medium text-yellow-800 dark:text-yellow-300">
+                Access Restricted
+              </h3>
+              <div className="mt-2 text-sm text-yellow-700 dark:text-yellow-400">
+                <p>
+                  Your account is currently pending approval or lacks an active subscription. 
+                  Some features may be limited until an administrator approves your access.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header & Profile */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
         <div>

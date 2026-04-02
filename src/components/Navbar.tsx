@@ -1,13 +1,38 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Settings, Sun, Moon, LogIn, User } from 'lucide-react';
+import { Settings, Sun, Moon, LogIn, User, Shield } from 'lucide-react';
 import { useTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
+import { supabase } from '../lib/supabase';
 
 export function Navbar() {
   const { theme, toggleTheme } = useTheme();
   const { user, signOut } = useAuth();
   const location = useLocation();
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    if (user?.email) {
+      // Check if user is an admin by looking at app_access
+      // For now, we'll consider 'professional' plan or specific emails as admin
+      supabase
+        .from('app_access')
+        .select('*')
+        .eq('email', user.email)
+        .single()
+        .then(({ data }) => {
+          // You can customize this logic. For example, if you add a 'role' column to app_access
+          // or just hardcode your email as the super admin.
+          if (data && (data.email === 'forai0707@gmail.com' || data.email === 'worldaffairs6265@gmail.com')) {
+            setIsAdmin(true);
+          } else {
+            setIsAdmin(false);
+          }
+        });
+    } else {
+      setIsAdmin(false);
+    }
+  }, [user]);
 
   const isCurrent = (path: string) => location.pathname === path;
 
@@ -78,6 +103,19 @@ export function Navbar() {
                 >
                   Profile
                 </Link>
+                {isAdmin && (
+                  <Link 
+                    to="/admin" 
+                    className={`flex items-center gap-1 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
+                      isCurrent('/admin') 
+                        ? 'bg-red-500/10 text-red-500 dark:bg-red-500/20' 
+                        : 'text-red-600 hover:text-red-700 hover:bg-red-50 dark:text-red-400 dark:hover:text-red-300 dark:hover:bg-red-900/20'
+                    }`}
+                  >
+                    <Shield className="w-4 h-4" />
+                    Admin
+                  </Link>
+                )}
               </nav>
             )}
           </div>

@@ -1,7 +1,9 @@
 import React, { useState, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Beaker, Play, Search, Activity, FileSpreadsheet, CheckCircle2, XCircle, Loader2, UploadCloud } from 'lucide-react';
 
 export function TestPanel() {
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('single');
   
   // Single Row Tester State
@@ -136,6 +138,12 @@ export function TestPanel() {
 
   return (
     <div className="max-w-7xl mx-auto mt-8 px-6 space-y-8 pb-20">
+      <button 
+        onClick={() => navigate(-1)}
+        className="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 mb-4"
+      >
+        ← Back
+      </button>
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
         <div>
           <h1 className="text-3xl font-display font-bold text-slate-900 dark:text-white flex items-center gap-3">
