@@ -1,9 +1,11 @@
 import React, { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Beaker, Play, Search, Activity, FileSpreadsheet, CheckCircle2, XCircle, Loader2, UploadCloud } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
 
 export function TestPanel() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [activeTab, setActiveTab] = useState('single');
   
   // Single Row Tester State
@@ -28,7 +30,7 @@ export function TestPanel() {
       const response = await fetch('/api/test/single', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(singleInput)
+        body: JSON.stringify({ ...singleInput, user_id: user?.id })
       });
       
       const data = await response.json();
@@ -64,7 +66,7 @@ export function TestPanel() {
       const response = await fetch('/api/test/fuzzy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ desc: fuzzyInput })
+        body: JSON.stringify({ desc: fuzzyInput, user_id: user?.id })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Failed to run fuzzy match');
@@ -91,7 +93,7 @@ export function TestPanel() {
       const response = await fetch('/api/test/trace', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ desc: traceInput })
+        body: JSON.stringify({ desc: traceInput, user_id: user?.id })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Failed to run rule trace');
@@ -281,25 +283,27 @@ export function TestPanel() {
                     {singleResult ? (
                       <>
                         {[
-                          { label: 'Valve Type', value: singleResult.processedRow.valveType, rule: 'Rule 2 — Valve Type Detection' },
-                          { label: 'Size', value: singleResult.processedRow.size, rule: 'Size Parsing' },
-                          { label: 'Class', value: singleResult.processedRow.class, rule: 'Rule 4 — Pressure Class' },
-                          { label: 'Standard', value: singleResult.processedRow.standard, rule: 'Rule 5 — Standard' },
-                          { label: 'Model', value: singleResult.processedRow.model, rule: 'Rule 6 — Model' },
-                          { label: 'MOC', value: singleResult.processedRow.moc, rule: 'Rule 7 — MOC' },
-                          { label: 'Trim', value: singleResult.processedRow.trim, rule: 'Rule 15 — Trim' },
-                          { label: 'Gasket', value: singleResult.processedRow.gasket, rule: 'Rule 8 — Gasket' },
-                          { label: 'Packing', value: singleResult.processedRow.packing, rule: 'Rule 9 — Packing' },
-                          { label: 'Operator', value: singleResult.processedRow.operator, rule: 'Rule 10 — Operator' },
-                          { label: 'End Detail', value: singleResult.processedRow.endDetail, rule: 'Rule 11 — End Detail' },
-                          { label: 'Bolting', value: singleResult.processedRow.bolting, rule: 'Rule 12 — Bolting' },
+                          { label: 'Valve Type', value: singleResult.processedRow.valveType },
+                          { label: 'Size', value: singleResult.processedRow.size },
+                          { label: 'Class', value: singleResult.processedRow.class },
+                          { label: 'Standard', value: singleResult.processedRow.standard },
+                          { label: 'Model', value: singleResult.processedRow.model },
+                          { label: 'MOC', value: singleResult.processedRow.moc },
+                          { label: 'Trim', value: singleResult.processedRow.trim },
+                          { label: 'Gasket', value: singleResult.processedRow.gasket },
+                          { label: 'Packing', value: singleResult.processedRow.packing },
+                          { label: 'Operator', value: singleResult.processedRow.operator },
+                          { label: 'End Detail', value: singleResult.processedRow.endDetail },
+                          { label: 'Bolting', value: singleResult.processedRow.bolting },
                         ].map((item, idx) => (
                           <div key={idx} className="flex flex-col sm:flex-row sm:items-center justify-between py-2 border-b border-slate-200 dark:border-[#21262D] last:border-0">
                             <div className="flex items-center gap-2">
                               <span className="text-sm font-medium text-slate-500 dark:text-[#8B949E] w-24">{item.label}</span>
                               <span className="text-sm font-semibold text-slate-900 dark:text-[#E6EDF3]">{item.value || '-'}</span>
                             </div>
-                            <span className="text-xs text-[#7EE787] dark:text-[#7EE787] mt-1 sm:mt-0 bg-green-50 dark:bg-[rgba(126,231,135,0.1)] px-2 py-1 rounded">{item.rule}</span>
+                            <span className="text-xs text-[#7EE787] dark:text-[#7EE787] mt-1 sm:mt-0 bg-green-50 dark:bg-[rgba(126,231,135,0.1)] px-2 py-1 rounded">
+                              {singleResult.processedRow.match_info || 'Unmatched'}
+                            </span>
                           </div>
                         ))}
                         {singleResult.flags && singleResult.flags.length > 0 && (

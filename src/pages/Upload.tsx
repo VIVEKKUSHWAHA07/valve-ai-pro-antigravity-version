@@ -71,12 +71,10 @@ export function Upload() {
             user_id: user.id,
             filename: file.name,
             total_rows: data.total_rows,
-            processed_rows: data.processed,
-            not_manufactured_count: data.not_manufactured,
-            flags_count: data.flags?.length || 0,
-            status: data.flags?.length > 0 ? 'Review Needed' : 'Completed',
-            download_data: data.download_url,
-            catalogue_version: 'v1'
+            matched_rows: data.processed_rows.filter((r: any) => r.catalogueConfidence === 'high' || r.catalogueConfidence === 'medium').length,
+            unmatched_rows: data.processed_rows.filter((r: any) => r.catalogueConfidence === 'none' || !r.catalogueConfidence).length,
+            flag_count: data.flags?.length || 0,
+            download_data: JSON.stringify(data.processed_rows)
           });
 
           // Increment usage counter
@@ -188,7 +186,17 @@ export function Upload() {
       {result && (
         <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
           
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {result.catalogue_count === 0 && (
+            <div className="bg-yellow-50 dark:bg-[#341A00] border border-yellow-200 dark:border-[#F0883E] text-yellow-800 dark:text-[#F0883E] px-6 py-4 rounded-xl flex items-start gap-4 mb-8">
+              <AlertTriangle className="w-6 h-6 shrink-0" />
+              <div>
+                <h3 className="font-semibold">No Product Catalogue Uploaded</h3>
+                <p className="text-sm mt-1">We processed the RFQ using standard industry rules, but we couldn't match products to your specific catalogue. Upload your catalogue in the Catalogue tab for better results.</p>
+              </div>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
             <div className="bg-white dark:bg-[#161B22] p-6 rounded-xl border border-slate-200 dark:border-[#21262D] shadow-sm relative">
               <div className="absolute top-0 left-0 w-3 h-3 hidden dark:block border-t-2 border-l-2 border-[#7EE787] opacity-40 rounded-tl-xl" />
               <div className="absolute bottom-0 right-0 w-3 h-3 hidden dark:block border-b-2 border-r-2 border-[#7EE787] opacity-40 rounded-br-xl" />
@@ -198,14 +206,24 @@ export function Upload() {
             <div className="bg-white dark:bg-[#161B22] p-6 rounded-xl border border-slate-200 dark:border-[#21262D] shadow-sm relative">
               <div className="absolute top-0 left-0 w-3 h-3 hidden dark:block border-t-2 border-l-2 border-[#7EE787] opacity-40 rounded-tl-xl" />
               <div className="absolute bottom-0 right-0 w-3 h-3 hidden dark:block border-b-2 border-r-2 border-[#7EE787] opacity-40 rounded-br-xl" />
-              <div className="text-xs font-semibold text-slate-500 dark:text-[#8B949E] uppercase tracking-widest mb-2">Processed</div>
-              <div className="text-4xl font-display font-bold text-[#00A8FF] dark:text-[#7EE787]">{result.processed}</div>
+              <div className="text-xs font-semibold text-slate-500 dark:text-[#8B949E] uppercase tracking-widest mb-2">Matched</div>
+              <div className="text-4xl font-display font-bold text-[#00A8FF] dark:text-[#7EE787]">
+                {result.processed_rows.filter((r: any) => r.catalogueConfidence === 'high' || r.catalogueConfidence === 'medium').length}
+              </div>
             </div>
             <div className="bg-white dark:bg-[#161B22] p-6 rounded-xl border border-slate-200 dark:border-[#21262D] shadow-sm relative">
               <div className="absolute top-0 left-0 w-3 h-3 hidden dark:block border-t-2 border-l-2 border-[#7EE787] opacity-40 rounded-tl-xl" />
               <div className="absolute bottom-0 right-0 w-3 h-3 hidden dark:block border-b-2 border-r-2 border-[#7EE787] opacity-40 rounded-br-xl" />
-              <div className="text-xs font-semibold text-slate-500 dark:text-[#8B949E] uppercase tracking-widest mb-2">Not Manufactured</div>
-              <div className="text-4xl font-display font-bold text-yellow-500 dark:text-[#F0883E]">{result.not_manufactured}</div>
+              <div className="text-xs font-semibold text-slate-500 dark:text-[#8B949E] uppercase tracking-widest mb-2">Unmatched</div>
+              <div className="text-4xl font-display font-bold text-slate-500 dark:text-[#8B949E]">
+                {result.processed_rows.filter((r: any) => r.catalogueConfidence === 'none' || !r.catalogueConfidence).length}
+              </div>
+            </div>
+            <div className="bg-white dark:bg-[#161B22] p-6 rounded-xl border border-slate-200 dark:border-[#21262D] shadow-sm relative">
+              <div className="absolute top-0 left-0 w-3 h-3 hidden dark:block border-t-2 border-l-2 border-[#7EE787] opacity-40 rounded-tl-xl" />
+              <div className="absolute bottom-0 right-0 w-3 h-3 hidden dark:block border-b-2 border-r-2 border-[#7EE787] opacity-40 rounded-br-xl" />
+              <div className="text-xs font-semibold text-slate-500 dark:text-[#8B949E] uppercase tracking-widest mb-2">Flags</div>
+              <div className="text-4xl font-display font-bold text-yellow-500 dark:text-[#F0883E]">{result.flags?.length || 0}</div>
             </div>
           </div>
 
@@ -251,7 +269,8 @@ export function Upload() {
                     <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Size</th>
                     <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Class</th>
                     <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Standard</th>
-                    <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Model</th>
+                    <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Catalogue Match</th>
+                    <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Score</th>
                     <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">MOC</th>
                     <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Trim</th>
                     <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Gasket</th>
@@ -259,6 +278,7 @@ export function Upload() {
                     <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Operator</th>
                     <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">End Detail</th>
                     <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Bolting</th>
+                    <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200 dark:divide-[#21262D] text-slate-700 dark:text-[#E6EDF3]">
@@ -271,7 +291,13 @@ export function Upload() {
                         <td className="px-4 py-3">{row.size}</td>
                         <td className="px-4 py-3">{row.class}</td>
                         <td className="px-4 py-3 text-xs">{row.standard}</td>
-                        <td className="px-4 py-3 text-xs">{row.model}</td>
+                        <td className="px-4 py-3 text-xs font-medium">{row.catalogueModel || row.model}</td>
+                        <td className="px-4 py-3 text-xs">
+                          {row.catalogueConfidence === 'high' && <span className="px-2 py-1 bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400 rounded-full">{row.catalogueMatchScore} (High)</span>}
+                          {row.catalogueConfidence === 'medium' && <span className="px-2 py-1 bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400 rounded-full">{row.catalogueMatchScore} (Med)</span>}
+                          {row.catalogueConfidence === 'low' && <span className="px-2 py-1 bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400 rounded-full">{row.catalogueMatchScore} (Low)</span>}
+                          {(!row.catalogueConfidence || row.catalogueConfidence === 'none') && <span className="px-2 py-1 bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-400 rounded-full">0 (None)</span>}
+                        </td>
                         <td className="px-4 py-3 text-xs">{row.moc}</td>
                         <td className="px-4 py-3 text-xs">{row.trim}</td>
                         <td className="px-4 py-3 text-xs max-w-[150px] truncate" title={row.gasket}>{row.gasket}</td>
@@ -279,6 +305,13 @@ export function Upload() {
                         <td className="px-4 py-3 text-xs">{row.operator}</td>
                         <td className="px-4 py-3 text-xs">{row.endDetail}</td>
                         <td className="px-4 py-3 text-xs">{row.bolting}</td>
+                        <td className="px-4 py-3 text-xs">
+                          {row.catalogueConfidence === 'high' || row.catalogueConfidence === 'medium' ? (
+                            <CheckCircle2 className="w-5 h-5 text-green-500" />
+                          ) : (
+                            <AlertTriangle className="w-5 h-5 text-yellow-500" />
+                          )}
+                        </td>
                       </tr>
                     );
                   })}

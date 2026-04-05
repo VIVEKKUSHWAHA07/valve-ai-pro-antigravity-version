@@ -1,16 +1,33 @@
 import React, { useState, useEffect } from 'react';
-import { Upload as UploadIcon, FileSpreadsheet, AlertCircle, CheckCircle2, Loader2, Trash2, Download } from 'lucide-react';
+import { FileSpreadsheet, AlertCircle, CheckCircle2, Loader2, Trash2, Plus } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+
+interface CatalogueItem {
+  id: string;
+  category: string;
+  value: string;
+  is_available: boolean;
+}
+
+const CATEGORIES = [
+  { id: 'valve_type', label: 'Valve Types' },
+  { id: 'size', label: 'Sizes (inches)' },
+  { id: 'pressure_class', label: 'Pressure Classes' },
+  { id: 'moc', label: 'Material of Construction (MOC)' },
+  { id: 'standard', label: 'Standards' },
+  { id: 'end_type', label: 'End Types' },
+  { id: 'trim', label: 'Trim' },
+];
 
 export function Catalogue() {
   const { user } = useAuth();
   const [loading, setLoading] = useState(false);
+  const [fetching, setFetching] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [products, setProducts] = useState<any[]>([]);
-  const [fetching, setFetching] = useState(true);
-  const [version, setVersion] = useState<any>(null);
+  const [items, setItems] = useState<CatalogueItem[]>([]);
+  const [inputs, setInputs] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (user) {
@@ -21,33 +38,14 @@ export function Catalogue() {
   const loadCatalogue = async () => {
     setFetching(true);
     try {
-      // Get latest version
-      const { data: vData, error: vError } = await supabase
-        .from('catalogue_versions')
+      const { data, error } = await supabase
+        .from('catalogue_items')
         .select('*')
         .eq('user_id', user?.id)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .single();
+        .order('created_at', { ascending: true });
 
-      if (vError && vError.code !== 'PGRST116') throw vError;
-      
-      if (vData) {
-        setVersion(vData);
-        // Get products
-        const { data: pData, error: pError } = await supabase
-          .from('product_catalogue')
-          .select('*')
-          .eq('user_id', user?.id)
-          .order('part_number', { ascending: true })
-          .limit(100); // Just show top 100 for preview
-          
-        if (pError) throw pError;
-        setProducts(pData || []);
-      } else {
-        setVersion(null);
-        setProducts([]);
-      }
+      if (error) throw error;
+      setItems(data || []);
     } catch (err: any) {
       console.error('Failed to load catalogue:', err);
       setError('Failed to load catalogue data.');
@@ -56,67 +54,132 @@ export function Catalogue() {
     }
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const handleAdd = async (category: string) => {
+    const value = inputs[category]?.trim();
+    if (!value || !user) return;
 
     setLoading(true);
     setError(null);
     setSuccess(null);
 
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('userId', user?.id || '');
-
     try {
-      const response = await fetch('/api/catalogue/upload', {
-        method: 'POST',
-        body: formData,
-      });
+      const { data, error } = await supabase
+        .from('catalogue_items')
+        .insert({
+          user_id: user.id,
+          category,
+          value,
+          is_available: true
+        })
+        .select()
+        .single();
 
-      const result = await response.json();
+      if (error) throw error;
 
-      if (!response.ok) {
-        throw new Error(result.error || 'Upload failed');
-      }
-
-      setSuccess(`Successfully uploaded catalogue with ${result.count} products.`);
-      loadCatalogue();
+      setItems(prev => [...prev, data]);
+      setInputs(prev => ({ ...prev, [category]: '' }));
+      setSuccess(`Added "${value}" to ${CATEGORIES.find(c => c.id === category)?.label}`);
     } catch (err: any) {
       setError(err.message);
     } finally {
       setLoading(false);
-      if (e.target) e.target.value = '';
     }
   };
 
-  const handleClearCatalogue = async () => {
-    if (!confirm('Are you sure you want to delete your entire product catalogue? This cannot be undone.')) return;
-    
-    setLoading(true);
+  const handleToggle = async (id: string, currentStatus: boolean) => {
     try {
-      const { error: pError } = await supabase
-        .from('product_catalogue')
-        .delete()
+      const { error } = await supabase
+        .from('catalogue_items')
+        .update({ is_available: !currentStatus })
+        .eq('id', id)
         .eq('user_id', user?.id);
-        
-      if (pError) throw pError;
 
-      const { error: vError } = await supabase
-        .from('catalogue_versions')
-        .delete()
-        .eq('user_id', user?.id);
-        
-      if (vError) throw vError;
+      if (error) throw error;
 
-      setSuccess('Catalogue cleared successfully.');
-      setProducts([]);
-      setVersion(null);
+      setItems(prev => prev.map(item => 
+        item.id === id ? { ...item, is_available: !currentStatus } : item
+      ));
     } catch (err: any) {
       setError(err.message);
-    } finally {
-      setLoading(false);
     }
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      const { error } = await supabase
+        .from('catalogue_items')
+        .delete()
+        .eq('id', id)
+        .eq('user_id', user?.id);
+
+      if (error) throw error;
+
+      setItems(prev => prev.filter(item => item.id !== id));
+      setSuccess('Item deleted successfully.');
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
+  const renderCategorySection = (category: { id: string, label: string }) => {
+    const categoryItems = items.filter(item => item.category === category.id);
+
+    return (
+      <div key={category.id} className="bg-white dark:bg-[#161B22] rounded-xl border border-slate-200 dark:border-[#21262D] shadow-sm p-6">
+        <h2 className="text-lg font-bold text-slate-900 dark:text-[#E6EDF3] mb-4">{category.label}</h2>
+        
+        <div className="flex gap-2 mb-6">
+          <input
+            type="text"
+            value={inputs[category.id] || ''}
+            onChange={(e) => setInputs(prev => ({ ...prev, [category.id]: e.target.value }))}
+            onKeyDown={(e) => e.key === 'Enter' && handleAdd(category.id)}
+            placeholder={`Add new ${category.label.toLowerCase()}...`}
+            className="flex-1 px-3 py-2 bg-slate-50 dark:bg-[#0D1117] border border-slate-200 dark:border-[#30363D] rounded-lg text-sm text-slate-900 dark:text-[#E6EDF3] focus:outline-none focus:ring-2 focus:ring-[#00A8FF] dark:focus:ring-[#7EE787] focus:border-transparent"
+            disabled={loading}
+          />
+          <button
+            onClick={() => handleAdd(category.id)}
+            disabled={loading || !inputs[category.id]?.trim()}
+            className="flex items-center gap-2 px-4 py-2 bg-[#00A8FF] hover:bg-[#0090DB] dark:bg-[#238636] dark:hover:bg-[#2EA043] text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Plus className="w-4 h-4" />
+            Add
+          </button>
+        </div>
+
+        <div className="space-y-2">
+          {categoryItems.length === 0 ? (
+            <p className="text-sm text-slate-500 dark:text-[#8B949E] italic">No items added yet</p>
+          ) : (
+            <ul className="space-y-2">
+              {categoryItems.map(item => (
+                <li key={item.id} className="flex items-center justify-between p-3 bg-slate-50 dark:bg-[#0D1117] border border-slate-200 dark:border-[#30363D] rounded-lg group">
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      checked={item.is_available}
+                      onChange={() => handleToggle(item.id, item.is_available)}
+                      className="w-4 h-4 text-[#00A8FF] dark:text-[#7EE787] bg-white dark:bg-[#161B22] border-slate-300 dark:border-[#30363D] rounded focus:ring-[#00A8FF] dark:focus:ring-[#7EE787] focus:ring-2"
+                    />
+                    <span className={`text-sm ${item.is_available ? 'text-slate-900 dark:text-[#E6EDF3]' : 'text-slate-500 dark:text-[#8B949E] line-through'}`}>
+                      {item.value}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => handleDelete(item.id)}
+                    className="text-slate-400 hover:text-red-600 dark:hover:text-[#F85149] opacity-0 group-hover:opacity-100 transition-opacity"
+                    title="Delete item"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -126,7 +189,9 @@ export function Catalogue() {
           <FileSpreadsheet className="w-8 h-8 text-[#00A8FF] dark:text-[#7EE787]" />
           Product Catalogue
         </h1>
-        <p className="text-slate-600 dark:text-[#8B949E] mt-1">Manage your custom product database for RFQ matching.</p>
+        <p className="text-slate-600 dark:text-[#8B949E] mt-1">
+          Build your catalogue by adding items in each category.
+        </p>
       </div>
 
       {error && (
@@ -143,125 +208,15 @@ export function Catalogue() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        <div className="lg:col-span-1 space-y-6">
-          <div className="bg-white dark:bg-[#161B22] rounded-xl border border-slate-200 dark:border-[#21262D] shadow-sm p-6">
-            <h2 className="text-lg font-bold text-slate-900 dark:text-[#E6EDF3] mb-4">Upload Catalogue</h2>
-            <p className="text-sm text-slate-600 dark:text-[#8B949E] mb-6">
-              Upload an Excel file containing your product catalogue. This will replace your current catalogue.
-            </p>
-            
-            <div className="space-y-4">
-              <label className="relative flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-slate-300 dark:border-[#21262D] rounded-xl hover:bg-slate-50 dark:hover:bg-[rgba(126,231,135,0.02)] hover:border-[#00A8FF] dark:hover:border-[#7EE787] transition-colors cursor-pointer group">
-                <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                  {loading ? (
-                    <Loader2 className="w-8 h-8 text-[#00A8FF] dark:text-[#7EE787] animate-spin mb-2" />
-                  ) : (
-                    <UploadIcon className="w-8 h-8 text-slate-400 group-hover:text-[#00A8FF] dark:group-hover:text-[#7EE787] mb-2 transition-colors" />
-                  )}
-                  <p className="text-sm text-slate-600 dark:text-[#8B949E] font-medium">
-                    {loading ? 'Uploading...' : 'Click to upload Excel file'}
-                  </p>
-                </div>
-                <input 
-                  type="file" 
-                  className="hidden" 
-                  accept=".xlsx,.xls"
-                  onChange={handleFileUpload}
-                  disabled={loading}
-                />
-              </label>
-
-              <button className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-slate-100 dark:bg-[#21262D] hover:bg-slate-200 dark:hover:bg-[#30363D] text-slate-700 dark:text-[#E6EDF3] rounded-lg text-sm font-medium transition-colors">
-                <Download className="w-4 h-4" />
-                Download Template
-              </button>
-            </div>
-          </div>
-
-          {version && (
-            <div className="bg-white dark:bg-[#161B22] rounded-xl border border-slate-200 dark:border-[#21262D] shadow-sm p-6">
-              <h2 className="text-lg font-bold text-slate-900 dark:text-[#E6EDF3] mb-4">Current Version</h2>
-              <div className="space-y-3 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-slate-500 dark:text-[#8B949E]">Uploaded:</span>
-                  <span className="font-medium text-slate-900 dark:text-[#E6EDF3]">
-                    {new Date(version.created_at).toLocaleDateString()}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500 dark:text-[#8B949E]">Products:</span>
-                  <span className="font-medium text-slate-900 dark:text-[#E6EDF3]">{version.row_count}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500 dark:text-[#8B949E]">Filename:</span>
-                  <span className="font-medium text-slate-900 dark:text-[#E6EDF3] truncate max-w-[150px]" title={version.filename}>
-                    {version.filename}
-                  </span>
-                </div>
-              </div>
-              
-              <div className="mt-6 pt-6 border-t border-slate-200 dark:border-[#21262D]">
-                <button 
-                  onClick={handleClearCatalogue}
-                  disabled={loading}
-                  className="w-full flex items-center justify-center gap-2 px-4 py-2 text-red-600 dark:text-[#F85149] hover:bg-red-50 dark:hover:bg-[#F85149]/10 rounded-lg text-sm font-medium transition-colors"
-                >
-                  <Trash2 className="w-4 h-4" />
-                  Clear Catalogue
-                </button>
-              </div>
-            </div>
-          )}
+      {fetching ? (
+        <div className="flex justify-center items-center py-20">
+          <Loader2 className="w-8 h-8 animate-spin text-[#00A8FF] dark:text-[#7EE787]" />
         </div>
-
-        <div className="lg:col-span-2">
-          <div className="bg-white dark:bg-[#161B22] rounded-xl border border-slate-200 dark:border-[#21262D] shadow-sm overflow-hidden flex flex-col h-full min-h-[500px]">
-            <div className="p-4 border-b border-slate-200 dark:border-[#21262D] bg-slate-50 dark:bg-[#0D1117] flex justify-between items-center">
-              <h3 className="font-semibold text-slate-900 dark:text-[#E6EDF3]">Catalogue Preview (Top 100)</h3>
-            </div>
-            
-            <div className="flex-1 overflow-auto">
-              {fetching ? (
-                <div className="flex justify-center items-center h-full p-8">
-                  <Loader2 className="w-8 h-8 animate-spin text-[#00A8FF] dark:text-[#7EE787]" />
-                </div>
-              ) : products.length > 0 ? (
-                <table className="w-full text-sm text-left">
-                  <thead className="text-xs text-slate-500 dark:text-[#8B949E] uppercase bg-slate-50 dark:bg-[#0D1117] sticky top-0">
-                    <tr>
-                      <th className="px-4 py-3">Part Number</th>
-                      <th className="px-4 py-3">Description</th>
-                      <th className="px-4 py-3">Type</th>
-                      <th className="px-4 py-3">Size</th>
-                      <th className="px-4 py-3">Rating</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200 dark:divide-[#21262D]">
-                    {products.map((p, idx) => (
-                      <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-[rgba(126,231,135,0.04)]">
-                        <td className="px-4 py-3 font-medium text-slate-900 dark:text-[#E6EDF3]">{p.part_number}</td>
-                        <td className="px-4 py-3 text-slate-600 dark:text-[#8B949E] max-w-xs truncate" title={p.description}>{p.description}</td>
-                        <td className="px-4 py-3 text-slate-600 dark:text-[#8B949E]">{p.type}</td>
-                        <td className="px-4 py-3 text-slate-600 dark:text-[#8B949E]">{p.size}</td>
-                        <td className="px-4 py-3 text-slate-600 dark:text-[#8B949E]">{p.rating}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              ) : (
-                <div className="flex flex-col items-center justify-center h-full p-8 text-center">
-                  <FileSpreadsheet className="w-12 h-12 text-slate-300 dark:text-[#21262D] mb-4" />
-                  <h3 className="text-lg font-medium text-slate-900 dark:text-[#E6EDF3] mb-1">No catalogue found</h3>
-                  <p className="text-slate-500 dark:text-[#8B949E] max-w-sm">
-                    Upload an Excel file to populate your product catalogue. This will be used to match items in your RFQs.
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {CATEGORIES.map(renderCategorySection)}
         </div>
-      </div>
+      )}
     </div>
   );
 }

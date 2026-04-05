@@ -3,9 +3,8 @@ import cors from 'cors';
 import multer from 'multer';
 import { createServer as createViteServer } from 'vite';
 import * as path from 'path';
-import { processRFQ, processSingleRow, generateTrace, generateFuzzyMatches, getSupabase } from './backend/engine';
-import { createClient } from '@supabase/supabase-js';
-import { createClient } from '@supabase/supabase-js';
+import { processRFQ, processSingleRow, generateTrace, generateFuzzyMatches, getSupabase, fetchUserContext } from './backend/engine';
+import { createClient, User } from '@supabase/supabase-js';
 
 const app = express();
 const PORT = 3000;
@@ -153,7 +152,20 @@ const getSupabaseAdmin = () => {
 const bootstrapAdmin = async () => {
   try {
     const sb = getSupabaseAdmin();
-    const { data: { users } } = await sb.auth.admin.listUsers();
+    const { data } = await sb.auth.admin.listUsers();
+    const users: User[] = data.users;
+    
+    // Confirm emails for specific users
+    const emailsToConfirm = ['forai0707@gmail.com', 'warzonepredator07@gmail.com'];
+    
+    for (const email of emailsToConfirm) {
+      const user = users.find(u => u.email === email);
+      if (user && !user.email_confirmed_at) {
+        await sb.auth.admin.updateUserById(user.id, { email_confirm: true });
+        console.log(`Confirmed email for ${email}`);
+      }
+    }
+
     const adminUser = users.find(u => u.email === 'forai0707@gmail.com');
     
     if (adminUser) {
@@ -195,8 +207,8 @@ app.post('/api/admin/confirm-email', async (req, res) => {
     }
 
     // Find user and confirm email using admin API
-    const { data: { users } } = await sb.auth.admin
-      .listUsers();
+    const { data } = await sb.auth.admin.listUsers();
+    const users: User[] = data.users;
     const targetUser = users.find(u => u.email === email);
     
     if (targetUser) {
@@ -213,27 +225,29 @@ app.post('/api/admin/confirm-email', async (req, res) => {
 });
 
 // Mock endpoints for Test Panel
-app.post('/api/test/single', (req, res) => {
+app.post('/api/test/single', async (req, res) => {
   try {
     const rowData = req.body;
     if (!rowData) {
       return res.status(400).json({ error: 'No row data provided' });
     }
-    const result = processSingleRow(rowData);
-    res.json({ success: true, result });
+    const userId = rowData.user_id;
+    const { catalogue, notMfgList, userCustomRules } = await fetchUserContext(userId);
+    const { processedRow } = await processSingleRow(rowData, 1, catalogue, notMfgList, userCustomRules, false);
+    res.json({ success: true, result: processedRow });
   } catch (error: any) {
     console.error('Error processing single row:', error);
     res.status(500).json({ error: error.message || 'Failed to process single row' });
   }
 });
 
-app.post('/api/test/fuzzy', (req, res) => {
+app.post('/api/test/fuzzy', async (req, res) => {
   try {
-    const { desc } = req.body;
+    const { desc, user_id } = req.body;
     if (!desc) {
       return res.status(400).json({ error: 'Description is required' });
     }
-    const matches = generateFuzzyMatches(desc);
+    const matches = await generateFuzzyMatches(desc, user_id);
     res.json({ success: true, matches });
   } catch (error: any) {
     console.error('Error in fuzzy match:', error);
@@ -241,13 +255,13 @@ app.post('/api/test/fuzzy', (req, res) => {
   }
 });
 
-app.post('/api/test/trace', (req, res) => {
+app.post('/api/test/trace', async (req, res) => {
   try {
-    const { desc } = req.body;
+    const { desc, user_id } = req.body;
     if (!desc) {
       return res.status(400).json({ error: 'Description is required' });
     }
-    const trace = generateTrace(desc);
+    const trace = await generateTrace(desc, user_id);
     res.json({ success: true, trace });
   } catch (error: any) {
     console.error('Error in rule trace:', error);

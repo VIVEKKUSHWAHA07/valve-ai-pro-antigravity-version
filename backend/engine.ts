@@ -1,5 +1,6 @@
 import * as xlsx from 'xlsx';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { matchAgainstCatalogue } from './catalogueMatcher';
 
 // Lazy initialize Supabase client for backend to prevent crashes if .env is missing
 let supabase: SupabaseClient | null = null;
@@ -29,6 +30,7 @@ export interface ProcessedRow {
   originalRow: any;
   score: number;
   matchId?: string;
+  match_info?: string;
 }
 
 export interface Flag {
@@ -47,6 +49,7 @@ export interface ProcessResult {
   download_url?: string;
   columnMap?: any;
   format?: string;
+  catalogue_count?: number;
 }
 
 // --- Format Detection Engine ---
@@ -76,107 +79,360 @@ export function detectColumns(headers: any[]): Record<string, number> {
   return colMap;
 }
 
+export function extractSizeFromText(text: string): string | null {
+  const sizeMatch = text.match(
+    /\b(\d+(?:\.\d+)?)\s*(?:inch|inches|"|''|in\b)/i
+  ) || text.match(/\bdn\s*(\d+)/i) || text.match(/\b(\d+(?:\.\d+)?)\s*mm\b/i);
 
-export function processSingleRow(rowData: any, rowIndex: number = 1, catalogue: any[] = [], notMfgList: string[] = ['Butterfly Valve', 'Plug Valve', 'Strainer', 'Double Block & Bleed'], userCustomRules: any[] = []): { processedRow: ProcessedRow, flags: Flag[], isNotMfg: boolean } {
+  if (sizeMatch) {
+    let val = sizeMatch[1];
+    if (text.match(/\bdn\s*(\d+)/i)) {
+      const dn = parseInt(val);
+      const dnMap: {[k:number]:string} = {
+        15:'1/2"', 20:'3/4"', 25:'1"', 32:'1.1/4"',
+        40:'1.1/2"', 50:'2"', 65:'2.1/2"', 80:'3"',
+        100:'4"', 125:'5"', 150:'6"', 200:'8"',
+        250:'10"', 300:'12"', 350:'14"', 400:'16"',
+        450:'18"', 500:'20"', 600:'24"'
+      };
+      return dnMap[dn] || `DN${dn}`;
+    } else if (text.match(/\b(\d+(?:\.\d+)?)\s*mm\b/i)) {
+      // Very basic mm to inch conversion for common sizes if needed, or just return mm
+      return `${val}mm`;
+    }
+    return `${val}"`;
+  }
+
+  // Fallback for fractions like 1/2" 3/4" 1.1/2" 1-1/2" 1 1/2"
+  const fracMatch = text.match(/\b(\d+[\s\-\.]\d+\/\d+"|\d+\/\d+")/);
+  if (fracMatch) return fracMatch[1].replace(/[\s\-]/, '.');
+
+  // Pattern 5: SIZE keyword
+  const sizeKeyword = text.match(/SIZE\s*:?\s*(\d+(?:\.\d+)?(?:[\s\-]\d+\/\d+)?"?)/i);
+  if (sizeKeyword) {
+    let val = sizeKeyword[1];
+    if (val.includes(' ') || val.includes('-')) {
+      val = val.replace(/[\s\-]/, '.');
+    }
+    return val;
+  }
+
+  return null; // Size not found in text
+}
+
+function extractClassFromText(text: string): string | null {
+  const t = text.toUpperCase();
+
+  // Pattern 1: RATING: keyword (most explicit)
+  const ratingMatch = t.match(
+    /RATING\s*:.*?(\d{3,4})\s*(?:#|LB|LBS|CLASS)/
+  );
+  if (ratingMatch) return `Class ${ratingMatch[1]}`;
+
+  // Pattern 2: explicit class patterns
+  const clMatch = t.match(
+    /\b(?:CL|CLASS|ANSI\s*CLASS?)\s*(\d{3,4})\b/
+  );
+  if (clMatch) return `Class ${clMatch[1]}`;
+
+  // Pattern 3: # notation
+  const hashMatch = t.match(
+    /\b(150|300|600|800|900|1500|2500|3000)\s*#/
+  );
+  if (hashMatch) {
+    const val = parseInt(hashMatch[1]);
+    if (val === 3000 || val === 6000) {
+      return `${val}# (Threaded/SW Class)`;
+    }
+    return `Class ${val}`;
+  }
+
+  // Pattern 4: LB/LBS notation
+  const lbMatch = t.match(
+    /\b(150|300|600|800|900|1500|2500)\s*LBS?\b/
+  );
+  if (lbMatch) return `Class ${lbMatch[1]}`;
+
+  // Pattern 5: PN notation (European)
+  const pnMatch = t.match(/\bPN\s*(10|16|25|40|63|100)\b/);
+  if (pnMatch) return `PN ${pnMatch[1]}`;
+
+  return null;
+}
+
+function extractTrimMOC(t: string): string | null {
+  // STEM material
+  const stemMatch = t.match(
+    /A182\s*F\s*(3\d+)\s*STEM|SS\s*(3\d+)\s*STEM/
+  );
+
+  // BALL material (for ball valves)
+  const ballMatch = t.match(
+    /(?:F(3\d+)\s*SS|ENP\s*A105|A182\s*F(3\d+))\s*.*?BALL/
+  );
+
+  // SEAT material
+  const seatMatch = t.match(
+    /\b(PEEK|PTFE|NYLON|TEFLON|METAL|STELLITE|SS\s*3\d+)\s*SEATS?\b/
+  );
+
+  const parts: string[] = [];
+  if (stemMatch)
+    parts.push(`F${stemMatch[1] || stemMatch[2]} Stem`);
+  if (ballMatch)
+    parts.push(ballMatch[1] ? `F${ballMatch[1]} Ball` : 'ENP A105 Ball');
+  if (seatMatch) parts.push(`${seatMatch[1]} Seat`);
+
+  return parts.length > 0 ? parts.join(' / ') : null;
+}
+
+function extractMOCFromText(text: string): {
+  bodyMoc: string | null;
+  trimMoc: string | null;
+  resolvedMoc: string;
+} {
+  const t = text.toUpperCase();
+
+  if (/A351\s*CF8M|CF8M/.test(t))
+    return { bodyMoc:'A351 CF8M', trimMoc: extractTrimMOC(t),
+             resolvedMoc:'A351 CF8M' };
+
+  if (/A352\s*LCB|LCB/.test(t))
+    return { bodyMoc:'A352 LCB', trimMoc: extractTrimMOC(t),
+             resolvedMoc:'A352 LCB' };
+
+  const a105BodyIdx = t.search(/A105\s*(?:BODY|CARBON\s*STEEL\s*BODY)/);
+  const a216Idx = t.search(/A216\s*WCB/);
+  if (a105BodyIdx !== -1 && (a216Idx === -1 || a105BodyIdx < a216Idx))
+    return { bodyMoc:'A105', trimMoc: extractTrimMOC(t),
+             resolvedMoc:'A105' };
+
+  if (/A216\s*WCB/.test(t))
+    return { bodyMoc:'A216 WCB', trimMoc: extractTrimMOC(t),
+             resolvedMoc:'A216 WCB' };
+
+  if (/\bA105\b/.test(t))
+    return { bodyMoc:'A105', trimMoc: extractTrimMOC(t),
+             resolvedMoc:'A105' };
+
+  if (/A182\s*F\s*316\s*(?:BODY|\/A351)/.test(t) ||
+      /A182\s*F316\s*\/\s*A351/.test(t))
+    return { bodyMoc:'A182 F316 / A351 CF8M', trimMoc: extractTrimMOC(t),
+             resolvedMoc:'SS316' };
+
+  if (/\bWCB\b/.test(t))
+    return { bodyMoc:'A216 WCB', trimMoc: extractTrimMOC(t),
+             resolvedMoc:'A216 WCB' };
+
+  return { bodyMoc: null, trimMoc: null, resolvedMoc: 'Not identified' };
+}
+
+function extractStandardFromText(
+  text: string,
+  valveType: string
+): string {
+  const t = text.toUpperCase();
+
+  const dcMatch = t.match(
+    /DESIGN\s*CODE\s*:?\s*([\w\s\/\.]+?)(?:,|$)/m
+  );
+  if (dcMatch) {
+    const dc = dcMatch[1].trim();
+    if (/API\s*6D/.test(dc))    return 'API 6D';
+    if (/ISO\s*17292/.test(dc)) return 'ISO 17292';
+    if (/API\s*602/.test(dc))   return 'API 602';
+    if (/API\s*600/.test(dc))   return 'API 600';
+    if (/API\s*603/.test(dc))   return 'API 603';
+    if (/BS\s*1868/.test(dc))   return 'BS 1868';
+    if (/BS\s*1873/.test(dc))   return 'BS 1873';
+    if (/BS\s*5351/.test(dc))   return 'BS 5351';
+    if (/ASME/.test(dc))        return 'ASME ' + dc.replace('ASME','').trim();
+  }
+
+  if (/API\s*6D/.test(t))        return 'API 6D';
+  if (/ISO\s*17292/.test(t))     return 'ISO 17292';
+  if (/API\s*602/.test(t))       return 'API 602';
+  if (/BS\s*1868/.test(t))       return 'BS 1868';
+  if (/BS\s*1873/.test(t))       return 'BS 1873';
+
+  const vt = valveType.toUpperCase();
+  if (/BALL/.test(vt))       return 'API 6D';
+  if (/GATE/.test(vt))       return 'API 600';
+  if (/GLOBE/.test(vt))      return 'BS 1873';
+  if (/CHECK/.test(vt))      return 'BS 1868';
+  if (/BUTTERFLY/.test(vt))  return 'API 609';
+
+  return 'To be confirmed';
+}
+
+function buildModelFromDescription(text: string,
+  valveType: string): string {
+  const t = text.toUpperCase();
+  const parts: string[] = [];
+
+  if (/BALL\s*VALVE/.test(t))        parts.push('Ball Valve');
+  else if (/GATE\s*VALVE/.test(t))   parts.push('Gate Valve');
+  else if (/GLOBE\s*VALVE/.test(t))  parts.push('Globe Valve');
+  else if (/CHECK\s*VALVE/.test(t))  parts.push('Check Valve');
+  else if (/BUTTERFLY/.test(t))      parts.push('Butterfly Valve');
+  else                                parts.push(valveType);
+
+  if (/SPLIT\s*BODY/.test(t))        parts.push('Split Body');
+  else if (/WELDED\s*BODY/.test(t))  parts.push('Welded Body');
+  else if (/SOLID\s*BODY/.test(t))   parts.push('Solid Body');
+  else if (/FORGED/.test(t))         parts.push('Forged Body');
+
+  if (/BOLTED\s*BONNET/.test(t))     parts.push('Bolted Bonnet');
+  else if (/WELDED\s*BONNET/.test(t)) parts.push('Welded Bonnet');
+  else if (/BOLTED/.test(t))          parts.push('Bolted');
+
+  if (/FULL\s*BORE|FULL\s*PORT/.test(t))
+    parts.push('Full Bore');
+  else if (/REDUCED\s*BORE|REDUCED\s*PORT/.test(t))
+    parts.push('Reduced Bore');
+
+  if (/BALL\s*VALVE/.test(t)) {
+    if (/TRUNNION\s*MOUNTED/.test(t))  parts.push('Trunnion Mounted');
+    else if (/FLOATING\s*BALL/.test(t)) parts.push('Floating Ball');
+  }
+
+  if (/GATE\s*VALVE/.test(t)) {
+    if (/FLEXIBLE\s*WEDGE/.test(t))     parts.push('Flexible Wedge');
+    else if (/SOLID\s*WEDGE/.test(t))   parts.push('Solid Wedge');
+    else if (/PARALLEL\s*SLIDE/.test(t)) parts.push('Parallel Slide');
+    if (/OUTSIDE\s*SCREW|OS&Y|OS\s*&\s*Y/.test(t))
+      parts.push('OS&Y');
+    if (/RISING\s*STEM/.test(t) ||
+        /RISING\s*&\s*BACK\s*SEAT/.test(t))
+      parts.push('Rising Stem');
+    if (/REPLACEABLE\s*SEAT/.test(t))   parts.push('Replaceable Seat');
+  }
+
+  if (/GATE\s*VALVE|GLOBE\s*VALVE/.test(t)) {
+    if (/NON[\s-]RISING\s*STEM/.test(t)) parts.push('NRS');
+    else if (/RISING\s*STEM/.test(t))    parts.push('RS');
+  }
+
+  if (/WITH\s*LOCKING\s*DEVICE/.test(t)) parts.push('with Locking Device');
+  if (/SPRING\s*LOADED/.test(t))         parts.push('Spring Loaded');
+  if (/GEAR\s*OPERAT/.test(t))           parts.push('Gear Operated');
+  if (/ELECTRIC\s*ACTUAT/.test(t))       parts.push('Electric Actuated');
+  if (/PNEUMATIC\s*ACTUAT/.test(t))      parts.push('Pneumatic Actuated');
+
+  return parts.join(', ');
+}
+
+function extractTrimFromText(text: string,
+  valveType: string): string {
+  const t = text.toUpperCase();
+  const parts: string[] = [];
+
+  const stemF = t.match(/A182\s*F\s*(3\d+)\s*STEM/);
+  const stemSS = t.match(/SS\s*(3\d+)\s*STEM/);
+  if (stemF)       parts.push(`F${stemF[1]} Stem`);
+  else if (stemSS) parts.push(`SS${stemSS[1]} Stem`);
+  else if (/STEM/.test(t) && /316/.test(t))
+    parts.push('SS316 Stem');
+
+  if (/BALL\s*VALVE/.test(t)) {
+    if (/F316\s*SS.*?BALL|SS.*?F316.*?BALL/.test(t))
+      parts.push('SS316 Ball');
+    else if (/ENP\s*A105.*?BALL/.test(t))
+      parts.push('ENP CS Ball');
+    else if (/A182\s*F316.*?BALL/.test(t))
+      parts.push('F316 Ball');
+  }
+
+  if (/GATE\s*VALVE|GLOBE\s*VALVE/.test(t)) {
+    if (/13\s*CR|13CR/.test(t))    parts.push('13Cr Trim');
+    if (/STELLITE/.test(t))        parts.push('Stellite');
+    if (/SS\s*316.*?DISC/.test(t)) parts.push('SS316 Disc');
+  }
+
+  if (/PEEK\s*SEAT/.test(t))    parts.push('PEEK Seat');
+  if (/PTFE\s*SEAT/.test(t))    parts.push('PTFE Seat');
+  if (/METAL\s*SEAT/.test(t))   parts.push('Metal Seat');
+  if (/TEFLON\s*SEAT/.test(t))  parts.push('PTFE Seat');
+  if (/NYLON\s*SEAT/.test(t))   parts.push('Nylon Seat');
+
+  if (/EXPANDED\s*GRAPHITE|GRAPHITE\s*PACKING/.test(t))
+    parts.push('Graphite Packing');
+  if (/PTFE\s*PACKING/.test(t)) parts.push('PTFE Packing');
+
+  return parts.length > 0 ? parts.join(' / ') : 'Standard';
+}
+
+function extractEndTypeFromText(text: string): string {
+  const t = text.toUpperCase();
+
+  if (/THREADED\s*\(NPTF?\)|ENDS?\s*:\s*THREADED/.test(t))
+    return 'Threaded (NPTF)';
+  if (/\bNPTF?\b/.test(t)) return 'Threaded (NPT)';
+  if (/\bTHREADED\b/.test(t)) return 'Threaded';
+  if (/\bSW\b|\bSOCKET\s*WELD/.test(t)) return 'Socket Weld';
+  if (/\bBW\b|\bBUTT\s*WELD/.test(t)) return 'Butt Weld';
+
+  if (/\bRTJ\b/.test(t)) return 'RTJ Flanged';
+  if (/\bRF\b/.test(t))  return 'RF Flanged';
+  if (/\bFF\b/.test(t))  return 'FF Flanged';
+  if (/FLANGED/.test(t)) return 'Flanged';
+
+  return 'RF Flanged';
+}
+
+function extractOperatorFromText(text: string,
+  sizeInches: number | null): string {
+  const t = text.toUpperCase();
+
+  if (/ELECTRIC\s*ACTUAT|MOV\b/.test(t)) return 'Electric Actuator';
+  if (/PNEUMATIC\s*ACTUAT|AOV\b/.test(t)) return 'Pneumatic Actuator';
+  if (/HYDRAULIC\s*ACTUAT/.test(t)) return 'Hydraulic Actuator';
+  if (/GEAR\s*OPERAT|GEAR\s*BOX/.test(t)) return 'Gear Operated';
+
+  if (sizeInches && sizeInches >= 6) {
+    if (/GATE\s*VALVE|GLOBE\s*VALVE|BALL\s*VALVE/.test(t)) {
+      return 'Gear Operated (recommended for this size)';
+    }
+  }
+
+  if (/HANDWHEEL/.test(t)) return 'Handwheel';
+  if (/LEVER/.test(t))     return 'Lever';
+
+  return sizeInches && sizeInches <= 4 ? 'Lever' : 'Handwheel';
+}
+
+export async function processSingleRow(rowData: any, rowIndex: number = 1, catalogue: Record<string, string[]> = {}, notMfgList: string[] = ['Butterfly Valve', 'Plug Valve', 'Strainer', 'Double Block & Bleed'], userCustomRules: any[] = [], isParagraphMode: boolean = false): Promise<{ processedRow: ProcessedRow, flags: Flag[], isNotMfg: boolean }> {
   const flags: Flag[] = [];
   
-  // Handle single column description format
   let desc = '';
-  let isSingleColumn = false;
   if (Array.isArray(rowData) && rowData.length === 1) {
     desc = String(rowData[0] || '');
-    isSingleColumn = true;
   } else if (typeof rowData === 'object' && rowData !== null && Object.keys(rowData).length === 1) {
     desc = String(Object.values(rowData)[0] || '');
-    isSingleColumn = true;
   } else if (typeof rowData === 'string') {
     desc = rowData;
-    isSingleColumn = true;
   } else {
     desc = rowData.desc || '';
   }
 
-  const combinedDesc = isSingleColumn ? desc.toUpperCase().replace(/\s+/g, ' ').trim() : `${rowData.desc} ${rowData.body} ${rowData.endType} ${rowData.construct}`.toUpperCase();
+  const combinedDesc = isParagraphMode ? desc.toUpperCase().replace(/\s+/g, ' ').trim() : `${rowData.desc} ${rowData.body} ${rowData.endType} ${rowData.construct}`.toUpperCase();
 
-  // 1. Detect Valve Type
   let valveType = '';
-  if (isSingleColumn) {
+  if (isParagraphMode) {
     valveType = combinedDesc.split(',')[0].trim();
   } else {
     valveType = detectValveType(rowData.desc, rowData.body, rowData.construct);
   }
   
   let isNotMfg = false;
-
   if (notMfgList.includes(valveType) || notMfgList.some(nm => valveType.toLowerCase().includes(nm.toLowerCase()))) {
     isNotMfg = true;
   }
 
-  // 2. Detect Size & Class
-  let size: string | null = null;
-  let pressureClass: string | null = null;
-
-  if (isSingleColumn) {
-    // Size is usually not in the description for this specific RFQ format
-    flags.push({
-      row: rowIndex,
-      field: 'Size',
-      message: '? Not found — check RFQ',
-      type: 'warning'
-    });
-
-    const classMatch = combinedDesc.match(/(?:CLASS|CL|RATING\s*:?|#)\s*(150|300|600|800|900|1500|2500)/i)
-      || combinedDesc.match(/(150|300|600|800|900|1500|2500)\s*(?:#|LB|CLASS)/i)
-      || combinedDesc.match(/3000#|3000\s*LB/i);
-    
-    if (classMatch) {
-      if (classMatch[0].includes('3000')) pressureClass = '800';
-      else pressureClass = classMatch[1];
-    } else {
-      flags.push({
-        row: rowIndex,
-        field: 'Class',
-        message: '? Not found — check RFQ',
-        type: 'warning'
-      });
-    }
-  } else {
-    size = parseSize(rowData.size);
-    pressureClass = parseClass(rowData.rating);
-
-    if (size && parseFloat(size) > 100) {
-      flags.push({
-        row: rowIndex,
-        field: 'Size',
-        message: '? Size could not be parsed — check RFQ column',
-        type: 'critical'
-      });
-      size = null;
-    }
-  }
-
-  // 3. Resolve Sub-type (Ball/Check)
-  if (valveType.includes('BALL VALVE') || valveType === 'Ball Valve') {
-    if (isSingleColumn) {
-      if (combinedDesc.includes('FLOATING BALL') || combinedDesc.includes('FLOAT BALL')) valveType = 'Floating Ball Valve';
-      else if (combinedDesc.includes('TRUNNION') || combinedDesc.includes('TRUNNION MOUNTED')) valveType = 'Trunnion Mounted Ball Valve';
-    } else {
-      valveType = resolveBallType(pressureClass || '', size || '');
-    }
-  } else if (valveType.includes('CHECK VALVE') || valveType === 'Check Valve') {
-    if (isSingleColumn) {
-      if (combinedDesc.includes('SWING CHECK') || combinedDesc.includes('SWING TYPE')) valveType = 'Swing Check Valve';
-      else if (combinedDesc.includes('DUAL PLATE') || combinedDesc.includes('DOUBLE PLATE') || combinedDesc.includes('DP CHECK')) valveType = 'Dual Plate Check Valve';
-      else if (combinedDesc.includes('LIFT CHECK') || combinedDesc.includes('PISTON')) valveType = 'Lift Check Valve';
-    } else {
-      valveType = resolveCheckType(size || '');
-    }
-  }
-
   const processedRow: ProcessedRow = {
-    valveType: isNotMfg ? valveType : valveType,
-    size: isSingleColumn ? '' : formatSize(size),
-    class: pressureClass ? `CLASS ${pressureClass}` : '',
+    valveType: valveType,
+    size: '',
+    class: '',
     standard: '',
     model: '',
     moc: '',
@@ -190,61 +446,105 @@ export function processSingleRow(rowData: any, rowIndex: number = 1, catalogue: 
     score: 0
   };
 
-  if (isNotMfg) {
-    processedRow.gasket = `Not manufactured by XYZ Company - ${valveType}`;
-    flags.push({
-      row: rowIndex,
-      field: 'Valve Type',
-      message: 'Not manufactured',
-      type: 'warning'
-    });
+  let size: string | null = null;
+  let pressureClass: string | null = null;
+
+  if (isParagraphMode) {
+    const standard   = extractStandardFromText(desc, valveType);
+    const moc        = extractMOCFromText(desc);
+    const trim       = extractTrimFromText(desc, valveType);
+    const endType    = extractEndTypeFromText(desc);
+    const model      = buildModelFromDescription(desc, valveType);
+    
+    size  = extractSizeFromText(desc);
+    pressureClass = extractClassFromText(desc);
+
+    if (!size) {
+      size = 'Not specified';
+      flags.push({
+        row: rowIndex,
+        field: 'Size',
+        message: 'Size not found in description — check if size column exists',
+        type: 'warning'
+      });
+    }
+
+    if (!pressureClass) {
+      pressureClass = 'Not specified';
+      flags.push({
+        row: rowIndex,
+        field: 'Class',
+        message: 'Pressure class not found — check if class column exists',
+        type: 'warning'
+      });
+    }
+
+    const sizeInches = size !== 'Not specified' ? parseFloat(size.replace('"', '')) : null;
+    const operator   = extractOperatorFromText(desc, sizeInches);
+
+    processedRow.valveType     = valveType;
+    processedRow.size          = size;
+    processedRow.class         = pressureClass;
+    processedRow.standard      = standard;
+    processedRow.model         = model;
+    processedRow.moc           = moc.resolvedMoc;
+    processedRow.trim          = trim;
+    processedRow.endDetail     = endType;
+    processedRow.operator      = operator;
+    processedRow.gasket        = getGasket(valveType);
+    processedRow.packing       = getPacking(valveType, standard);
+    processedRow.bolting       = getBolting(moc.resolvedMoc) || 'Standard Bolting';
+
+    if (isNotMfg) {
+      processedRow.gasket = `Not manufactured by XYZ Company - ${valveType}`;
+      flags.push({
+        row: rowIndex,
+        field: 'Valve Type',
+        message: 'Not manufactured',
+        type: 'warning'
+      });
+    }
+
   } else {
-    // 4. Standard
-    if (isSingleColumn) {
-      const dcMatch = combinedDesc.match(/DESIGN\s*CODE\s*:?\s*([A-Z0-9\s\.]+?)(?:,|$)/);
-      if (dcMatch) processedRow.standard = dcMatch[1].trim();
+    // Multi-column mode
+    size = parseSize(rowData.size);
+    if (!size && desc) {
+      size = extractSizeFromText(desc);
+    }
+    pressureClass = parseClass(rowData.rating);
+
+    if (size && parseFloat(size) > 100) {
+      flags.push({
+        row: rowIndex,
+        field: 'Size',
+        message: '? Size could not be parsed — check RFQ column',
+        type: 'critical'
+      });
+      size = null;
+    }
+
+    if (valveType.includes('BALL VALVE') || valveType === 'Ball Valve') {
+      valveType = resolveBallType(pressureClass || '', size || '');
+    } else if (valveType.includes('CHECK VALVE') || valveType === 'Check Valve') {
+      valveType = resolveCheckType(size || '');
+    }
+
+    processedRow.valveType = valveType;
+    processedRow.size = formatSize(size);
+    processedRow.class = pressureClass ? `CLASS ${pressureClass}` : '';
+
+    if (isNotMfg) {
+      processedRow.gasket = `Not manufactured by XYZ Company - ${valveType}`;
+      flags.push({
+        row: rowIndex,
+        field: 'Valve Type',
+        message: 'Not manufactured',
+        type: 'warning'
+      });
     } else {
       processedRow.standard = getStandard(valveType, size, pressureClass || '') || '';
-    }
-    
-    // 5. Model
-    if (isSingleColumn) {
-      if (combinedDesc.includes('PRESSURE SEAL')) processedRow.model = 'Pressure Seal';
-      else if (combinedDesc.includes('BOLTED BONNET') || combinedDesc.includes('SPLIT BODY') || combinedDesc.includes('BOLTED')) processedRow.model = 'Bolted Bonnet';
-    } else {
       processedRow.model = getModel(valveType, size || '', pressureClass || '', rowData.endType);
-    }
-    
-    // 6. MOC
-    if (isSingleColumn) {
-      const MOC_PATTERNS = [
-        { pattern: /A182\s*F\s*316(?:L)?(?!\s*STEM)(?!\s*BALL)/i, moc: 'F316' },
-        { pattern: /A351\s*CF8M/i, moc: 'CF8M' },
-        { pattern: /A216\s*WCB/i, moc: 'WCB' },
-        { pattern: /A105N/i, moc: 'A105N' },
-        { pattern: /\bA105\b/i, moc: 'A105' },
-        { pattern: /A182\s*F304(?!L)/i, moc: 'F304' },
-        { pattern: /A182\s*F316L/i, moc: 'F316L' },
-        { pattern: /A182\s*F51|2205|DUPLEX/i, moc: 'F51' },
-        { pattern: /A182\s*F53|SUPER\s*DUPLEX|2507/i, moc: 'F53' },
-        { pattern: /HASTELLOY|C276/i, moc: 'HASTELLOY' },
-        { pattern: /LF2|A350\s*LF2/i, moc: 'LF2' },
-        { pattern: /\bWCB\b/i, moc: 'WCB' },
-      ];
-
-      const bodyMatch = combinedDesc.match(/([A-Z0-9\s\/]+?)\s*BODY/);
-      if (bodyMatch) {
-        const bodyContext = bodyMatch[1] + ' BODY';
-        for (const { pattern, moc } of MOC_PATTERNS) {
-          if (pattern.test(bodyContext)) { processedRow.moc = moc; break; }
-        }
-      }
-      if (!processedRow.moc) {
-        for (const { pattern, moc } of MOC_PATTERNS) {
-          if (pattern.test(combinedDesc)) { processedRow.moc = moc; break; }
-        }
-      }
-    } else {
+      
       const mocResult = getMOC(rowData.body);
       processedRow.moc = mocResult.resolved || 'Unknown';
       if (mocResult.flag) {
@@ -263,12 +563,7 @@ export function processSingleRow(rowData: any, rowIndex: number = 1, catalogue: 
           type: 'critical'
         });
       }
-    }
 
-    // 7. Trim
-    if (isSingleColumn) {
-      processedRow.trim = getTrim(valveType, null, combinedDesc, null) || 'Standard Trim';
-    } else {
       const trimResult = getTrim(valveType, size, rowData.trim, rowData.body);
       processedRow.trim = trimResult || '';
       if (!trimResult && !valveType.includes('Ball') && !isNotMfg) {
@@ -279,53 +574,23 @@ export function processSingleRow(rowData: any, rowIndex: number = 1, catalogue: 
           type: 'warning'
         });
       }
-    }
 
-    // 8. Gasket
-    processedRow.gasket = getGasket(valveType);
-
-    // 9. Packing
-    processedRow.packing = getPacking(valveType, processedRow.standard);
-
-    // 10. Operator
-    processedRow.operator = getOperator(valveType, size, pressureClass || '') || '';
-
-    // 11. End Detail
-    if (isSingleColumn) {
-      if (combinedDesc.includes('RTJ') || combinedDesc.includes('RING TYPE JOINT')) processedRow.endDetail = 'RTJ';
-      else if (combinedDesc.includes('THREADED') || combinedDesc.includes('NPTF') || combinedDesc.includes('NPT')) processedRow.endDetail = 'THD';
-      else if (combinedDesc.includes('SOCKET WELD') || combinedDesc.includes('SWE') || combinedDesc.includes('S.W')) processedRow.endDetail = 'SW';
-      else if (combinedDesc.includes('BUTT WELD') || combinedDesc.includes('BWE') || combinedDesc.includes('B.W')) processedRow.endDetail = 'BW';
-      else if (combinedDesc.includes('RF') || combinedDesc.includes('RAISED FACE') || combinedDesc.includes('FLANGED')) processedRow.endDetail = 'FLG';
-      else processedRow.endDetail = 'FLG'; // default
-    } else {
+      processedRow.gasket = getGasket(valveType);
+      processedRow.packing = getPacking(valveType, processedRow.standard);
+      processedRow.operator = getOperator(valveType, size, pressureClass || '') || '';
       processedRow.endDetail = getEndDetail(rowData.endType, combinedDesc);
-    }
-
-    // 12. Bolting
-    processedRow.bolting = getBolting(processedRow.moc) || 'Standard Bolting';
-
-    // Mock Supabase Matching
-    const matchScore = calculateScore(processedRow, catalogue);
-    processedRow.score = matchScore;
-
-    if (matchScore < 70) {
-      flags.push({
-        row: rowIndex,
-        field: 'Match',
-        message: 'No catalogue match found',
-        type: 'warning'
-      });
+      processedRow.bolting = getBolting(processedRow.moc) || 'Standard Bolting';
     }
   }
 
-  // Apply user custom rules — override defaults for this user only
+  // ── RULES MATCHING (TOP PRIORITY) ──
+  let ruleMatched = false;
   for (const rule of userCustomRules) {
     const allMet = rule.conditions.every((cond: any) => {
       const fieldMap: Record<string, string> = {
         valve_type: processedRow.valveType,
         size:       processedRow.size?.replace('"', '') || '',
-        class:      processedRow.class?.replace('CLASS ', '') || '',
+        class:      processedRow.class?.replace('CLASS ', '').replace('Class ', '') || '',
         moc:        processedRow.moc || '',
         end_type:   processedRow.endDetail || '',
         trim:       processedRow.trim || '',
@@ -349,10 +614,193 @@ export function processSingleRow(rowData: any, rowIndex: number = 1, catalogue: 
       };
       const target = fieldMap[rule.output_field];
       if (target) (processedRow as any)[target] = rule.output_value;
+      
+      processedRow.match_info = `Rule Match — Rule #${rule.id || 'Unknown'}`;
+      ruleMatched = true;
+      break; // Stop checking rules after first match
     }
   }
 
+  // ── CATALOGUE MATCHING ──
+  if (!isNotMfg && !ruleMatched) {
+    let highestLayer = 0;
+    let hasUnmatched = false;
+    let hasRestricted = false;
+
+    const checkField = async (extractedValue: string, category: string) => {
+      if (catalogue[category] && catalogue[category].length > 0) {
+        hasRestricted = true;
+        const result = await matchAgainstCatalogue(extractedValue, catalogue[category], category);
+        if (!result.matched) {
+          hasUnmatched = true;
+          return '-';
+        } else {
+          highestLayer = Math.max(highestLayer, result.layer || 0);
+          return result.matched;
+        }
+      } else {
+        return extractedValue;
+      }
+    };
+
+    processedRow.valveType = await checkField(processedRow.valveType || '', 'valve_type');
+    processedRow.size = await checkField(processedRow.size || '', 'size');
+    processedRow.class = await checkField(processedRow.class || '', 'pressure_class');
+    processedRow.moc = await checkField(processedRow.moc || '', 'moc');
+    processedRow.standard = await checkField(processedRow.standard || '', 'standard');
+    processedRow.endDetail = await checkField(processedRow.endDetail || '', 'end_type');
+    processedRow.trim = await checkField(processedRow.trim || '', 'trim');
+
+    if (hasUnmatched) {
+      processedRow.match_info = 'Unmatched';
+      flags.push({
+        row: rowIndex,
+        field: 'Catalogue',
+        message: 'No matching product found in catalogue for one or more fields',
+        type: 'warning'
+      });
+    } else if (!hasRestricted) {
+      processedRow.match_info = 'Unrestricted — No catalogue entries';
+    } else {
+      processedRow.match_info = `Catalogue Match — Layer ${highestLayer} (${highestLayer === 1 ? 'Alias' : highestLayer === 2 ? 'Fuzzy' : 'AI'})`;
+    }
+  } else if (isNotMfg) {
+    processedRow.match_info = 'Unmatched';
+  }
+
   return { processedRow, flags, isNotMfg };
+}
+
+export async function fetchUserContext(userId?: string) {
+  let catalogue: Record<string, string[]> = {};
+  let catalogueCount = 0;
+  let notMfgList = ['Butterfly Valve', 'Plug Valve', 'Strainer', 'Double Block & Bleed'];
+  let userCustomRules: any[] = [];
+
+  if (!userId) return { catalogue, catalogueCount, notMfgList, userCustomRules };
+
+  const sb = getSupabase();
+  if (!sb) return { catalogue, catalogueCount, notMfgList, userCustomRules };
+
+  try {
+    const [{ data: catData, error: catError }, { data: rulesData, error: rulesError }, { data: customData }] = await Promise.all([
+      sb.from('catalogue_items').select('*').eq('user_id', userId),
+      sb.from('engine_rules').select('*').eq('user_id', userId),
+      sb.from('user_custom_rules').select('*').eq('user_id', userId).eq('active', true).order('priority', { ascending: true })
+    ]);
+    
+    if (!catError && catData) {
+      for (const item of catData) {
+        if (item.is_available) {
+          if (!catalogue[item.category]) catalogue[item.category] = [];
+          catalogue[item.category].push(item.value);
+          catalogueCount++;
+        }
+      }
+    }
+
+    if (!rulesError && rulesData) {
+      // Merge aliases
+      const aliases = rulesData.filter(r => r.rule_type === 'aliases');
+      for (const rule of aliases) {
+        const { abbr, mapsTo } = rule.rule_data;
+        if (!abbr || !mapsTo) continue;
+        
+        const targetMap = mapsTo.toLowerCase().includes('valve') ? VALVE_ALIASES : null;
+        if (targetMap) {
+          const key = Object.keys(VALVE_CANONICAL).find(k => VALVE_CANONICAL[k].toLowerCase() === mapsTo.toLowerCase());
+          if (key) {
+            if (!targetMap[key]) targetMap[key] = [];
+            if (!targetMap[key].includes(abbr.toUpperCase())) {
+              targetMap[key].push(abbr.toUpperCase());
+            }
+          }
+        }
+      }
+
+      // Merge MOC rules
+      const mocRules = rulesData.filter(r => r.rule_type === 'moc');
+      for (const rule of mocRules) {
+        const { customerWrites, resolvedMoc, type } = rule.rule_data;
+        if (!customerWrites || !resolvedMoc) continue;
+
+        // Find existing key or create new one
+        let key = Object.keys(MOC_CANONICAL).find(k => MOC_CANONICAL[k].toLowerCase() === resolvedMoc.toLowerCase());
+        if (!key) {
+          key = customerWrites.toLowerCase().replace(/[^a-z0-9]/g, '');
+          MOC_CANONICAL[key] = resolvedMoc;
+          MOC_CAST[key] = type === 'Cast';
+        }
+        
+        if (!MOC_ALIASES[key]) MOC_ALIASES[key] = [];
+        if (!MOC_ALIASES[key].includes(customerWrites.toUpperCase())) {
+          MOC_ALIASES[key].push(customerWrites.toUpperCase());
+        }
+      }
+
+      // Merge Not Mfg rules
+      const notMfgRules = rulesData.filter(r => r.rule_type === 'notmfg');
+      for (const rule of notMfgRules) {
+        const { label, active } = rule.rule_data;
+        if (active && label && !notMfgList.includes(label)) {
+          notMfgList.push(label);
+        } else if (!active && label) {
+          notMfgList = notMfgList.filter(l => l !== label);
+        }
+      }
+
+      // Merge Trim rules
+      const trimRules = rulesData.filter(r => r.rule_type === 'trim');
+      for (const rule of trimRules) {
+        const { code, wo, ss, ssw } = rule.rule_data;
+        if (!code) continue;
+
+        // Find existing key or create new one
+        let key = Object.keys(TRIM_CANONICAL).find(k => TRIM_CANONICAL[k].toLowerCase() === code.toLowerCase());
+        if (!key) {
+          key = 'trim_' + code.toLowerCase().replace(/[^a-z0-9]/g, '');
+          TRIM_CANONICAL[key] = code;
+          TRIM_DATA[key] = { wo: wo || null, ss: ss || null, ssw: ssw || null };
+        } else {
+          TRIM_DATA[key] = { wo: wo || null, ss: ss || null, ssw: ssw || null };
+        }
+        
+        if (!TRIM_ALIASES[key]) TRIM_ALIASES[key] = [];
+        if (!TRIM_ALIASES[key].includes(code.toUpperCase())) {
+          TRIM_ALIASES[key].push(code.toUpperCase());
+        }
+      }
+
+      // Merge Operator rules
+      const operatorRules = rulesData.filter(r => r.rule_type === 'operator');
+      for (const rule of operatorRules) {
+        const { category, class: cls, threshold, below } = rule.rule_data;
+        if (!category || !cls || !threshold || !below) continue;
+        
+        const catKey = category.toLowerCase().includes('gate') ? 'gate' :
+                       category.toLowerCase().includes('globe') ? 'globe' :
+                       category.toLowerCase().includes('ball') ? 'ball' : null;
+        
+        if (catKey) {
+          const classNum = parseInt(cls);
+          if (!isNaN(classNum)) {
+            if (!OPERATOR_THRESHOLDS[catKey]) OPERATOR_THRESHOLDS[catKey] = {};
+            OPERATOR_THRESHOLDS[catKey][classNum] = parseFloat(threshold.replace(/[^0-9.]/g, ''));
+            
+            if (!OPERATOR_BELOW[catKey]) OPERATOR_BELOW[catKey] = {};
+            OPERATOR_BELOW[catKey][classNum] = below;
+          }
+        }
+      }
+    }
+
+    if (customData) userCustomRules = customData;
+
+  } catch (err) {
+    console.error('Failed to load catalogue or rules:', err);
+  }
+
+  return { catalogue, catalogueCount, notMfgList, userCustomRules };
 }
 
 export async function processRFQ(fileBuffer: Buffer, userId?: string, filename?: string, customColumnMap?: Record<string, number>): Promise<ProcessResult> {
@@ -416,135 +864,14 @@ export async function processRFQ(fileBuffer: Buffer, userId?: string, filename?:
   const headers = isSingleColumn ? [] : (data[headerRowIndex] as any[]);
   const columnMap = isSingleColumn ? {} : (customColumnMap || detectColumns(headers));
 
+  const isMultiColumn = headers.length >= 3 &&
+    headers.some(h => /size|dn|nps/i.test(String(h))) &&
+    headers.some(h => /class|rating|pressure/i.test(String(h)));
+
+  const isParagraphMode = isSingleColumn || !isMultiColumn;
+
   // Fetch product catalogue and rules
-  let catalogue: any[] = [];
-  let notMfgList = ['Butterfly Valve', 'Plug Valve', 'Strainer', 'Double Block & Bleed'];
-  const sb = getSupabase();
-  if (sb) {
-    try {
-      const [{ data: catData, error: catError }, { data: rulesData, error: rulesError }] = await Promise.all([
-        userId ? sb.from('product_catalogue').select('*').eq('user_id', userId) : Promise.resolve({ data: null, error: null }),
-        userId ? sb.from('engine_rules').select('*').eq('user_id', userId) : Promise.resolve({ data: null, error: null })
-      ]);
-      
-      if (!catError && catData) {
-        catalogue = catData;
-      }
-
-      if (!rulesError && rulesData) {
-        // Merge aliases
-        const aliases = rulesData.filter(r => r.rule_type === 'aliases');
-        for (const rule of aliases) {
-          const { abbr, mapsTo } = rule.rule_data;
-          if (!abbr || !mapsTo) continue;
-          
-          const targetMap = mapsTo.toLowerCase().includes('valve') ? VALVE_ALIASES : null;
-          if (targetMap) {
-            const key = Object.keys(VALVE_CANONICAL).find(k => VALVE_CANONICAL[k].toLowerCase() === mapsTo.toLowerCase());
-            if (key) {
-              if (!targetMap[key]) targetMap[key] = [];
-              if (!targetMap[key].includes(abbr.toUpperCase())) {
-                targetMap[key].push(abbr.toUpperCase());
-              }
-            }
-          }
-        }
-
-        // Merge MOC rules
-        const mocRules = rulesData.filter(r => r.rule_type === 'moc');
-        for (const rule of mocRules) {
-          const { customerWrites, resolvedMoc, type } = rule.rule_data;
-          if (!customerWrites || !resolvedMoc) continue;
-
-          // Find existing key or create new one
-          let key = Object.keys(MOC_CANONICAL).find(k => MOC_CANONICAL[k].toLowerCase() === resolvedMoc.toLowerCase());
-          if (!key) {
-            key = customerWrites.toLowerCase().replace(/[^a-z0-9]/g, '');
-            MOC_CANONICAL[key] = resolvedMoc;
-            MOC_CAST[key] = type === 'Cast';
-          }
-          
-          if (!MOC_ALIASES[key]) MOC_ALIASES[key] = [];
-          if (!MOC_ALIASES[key].includes(customerWrites.toUpperCase())) {
-            MOC_ALIASES[key].push(customerWrites.toUpperCase());
-          }
-        }
-
-        // Merge Not Mfg rules
-        const notMfgRules = rulesData.filter(r => r.rule_type === 'notmfg');
-        for (const rule of notMfgRules) {
-          const { label, active } = rule.rule_data;
-          if (active && label && !notMfgList.includes(label)) {
-            notMfgList.push(label);
-          } else if (!active && label) {
-            notMfgList = notMfgList.filter(l => l !== label);
-          }
-        }
-
-        // Merge Trim rules
-        const trimRules = rulesData.filter(r => r.rule_type === 'trim');
-        for (const rule of trimRules) {
-          const { code, wo, ss, ssw } = rule.rule_data;
-          if (!code) continue;
-
-          // Find existing key or create new one
-          let key = Object.keys(TRIM_CANONICAL).find(k => TRIM_CANONICAL[k].toLowerCase() === code.toLowerCase());
-          if (!key) {
-            key = 'trim_' + code.toLowerCase().replace(/[^a-z0-9]/g, '');
-            TRIM_CANONICAL[key] = code;
-            TRIM_DATA[key] = { wo: wo || null, ss: ss || null, ssw: ssw || null };
-          } else {
-            TRIM_DATA[key] = { wo: wo || null, ss: ss || null, ssw: ssw || null };
-          }
-          
-          if (!TRIM_ALIASES[key]) TRIM_ALIASES[key] = [];
-          if (!TRIM_ALIASES[key].includes(code.toUpperCase())) {
-            TRIM_ALIASES[key].push(code.toUpperCase());
-          }
-        }
-
-        // Merge Operator rules
-        const operatorRules = rulesData.filter(r => r.rule_type === 'operator');
-        for (const rule of operatorRules) {
-          const { category, class: cls, threshold, below } = rule.rule_data;
-          if (!category || !cls || !threshold || !below) continue;
-          
-          const catKey = category.toLowerCase().includes('gate') ? 'gate' :
-                         category.toLowerCase().includes('globe') ? 'globe' :
-                         category.toLowerCase().includes('ball') ? 'ball' : null;
-          
-          if (catKey) {
-            const classNum = parseInt(cls);
-            if (!isNaN(classNum)) {
-              if (!OPERATOR_THRESHOLDS[catKey]) OPERATOR_THRESHOLDS[catKey] = {};
-              OPERATOR_THRESHOLDS[catKey][classNum] = parseFloat(threshold.replace(/[^0-9.]/g, ''));
-              
-              if (!OPERATOR_BELOW[catKey]) OPERATOR_BELOW[catKey] = {};
-              OPERATOR_BELOW[catKey][classNum] = below;
-            }
-          }
-        }
-      }
-    } catch (err) {
-      console.error('Failed to load catalogue or rules:', err);
-    }
-  }
-
-  // Load user custom rules
-  let userCustomRules: any[] = [];
-  if (userId) {
-    const sb = getSupabase();
-    if (sb) {
-      const { data: customData } = await sb
-        .from('user_custom_rules')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('active', true)
-        .order('priority', { ascending: true });
-
-      if (customData) userCustomRules = customData;
-    }
-  }
+  const { catalogue, catalogueCount, notMfgList, userCustomRules } = await fetchUserContext(userId);
 
   const result: ProcessResult = {
     total_rows: dataRows.length,
@@ -553,7 +880,8 @@ export async function processRFQ(fileBuffer: Buffer, userId?: string, filename?:
     flags: [],
     processed_rows: [],
     columnMap: columnMap,
-    format: 'multi_column'
+    format: 'multi_column',
+    catalogue_count: catalogueCount
   };
 
   // Helper — get value by detected column, fallback to fixed index
@@ -584,7 +912,7 @@ export async function processRFQ(fileBuffer: Buffer, userId?: string, filename?:
       };
     }
 
-    const { processedRow, flags, isNotMfg } = processSingleRow(rowData, i + (isSingleColumn ? 1 : headerRowIndex + 2), catalogue, notMfgList, userCustomRules);
+    const { processedRow, flags, isNotMfg } = await processSingleRow(rowData, i + (isSingleColumn ? 1 : headerRowIndex + 2), catalogue, notMfgList, userCustomRules, isParagraphMode);
 
     if (isNotMfg) {
       result.not_manufactured++;
@@ -595,54 +923,110 @@ export async function processRFQ(fileBuffer: Buffer, userId?: string, filename?:
     result.processed++;
   }
 
-  // Generate output Excel
-  const outData = result.processed_rows.map(r => ({
-    ValveType: r.valveType,
-    Size: r.size,
-    Class: r.class,
-    Standard: r.standard,
-    Model: r.model,
-    MOC: r.moc,
-    Trim: r.trim,
-    Gasket: r.gasket,
-    Packing: r.packing,
-    Operator: r.operator,
-    EndDetail: r.endDetail,
-    Bolting: r.bolting
-  }));
+  // Generate output Excel (3 TABS)
+  const wb = xlsx.utils.book_new();
 
-  const outSheet = xlsx.utils.json_to_sheet(outData);
-  const outWorkbook = xlsx.utils.book_new();
-  xlsx.utils.book_append_sheet(outWorkbook, outSheet, 'Working Sheet');
-  
-  // Convert to base64 for download
-  const outBuffer = xlsx.write(outWorkbook, { type: 'base64', bookType: 'xlsx' });
-  result.download_url = `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${outBuffer}`;
+  // Tab 1 — OUTPUT
+  const outputHeaders = [
+    'Sr No', 'Tag No', 'Description', 'Valve Type', 'Size', 'Pressure Class',
+    'MOC', 'End Type', 'Model', 'Standard', 'Trim', 'Match Info', 'Remarks'
+  ];
+  const outputRows = result.processed_rows.map((r, idx) => [
+    idx + 1,
+    r.originalRow?.item || '',
+    r.originalRow?.desc || '',
+    r.valveType,
+    r.size,
+    r.class,
+    r.moc,
+    r.endDetail,
+    r.model,
+    r.standard,
+    r.trim,
+    r.match_info || 'Unmatched',
+    result.flags.filter(f => f.row === idx + (isSingleColumn ? 1 : headerRowIndex + 2)).map(f => f.message).join('; ')
+  ]);
 
-  // Save to processing_history if userId is provided
-  if (userId && filename) {
-    const sb = getSupabase();
-    if (sb) {
-      try {
-        await sb.from('processing_history').insert({
-          user_id: userId,
-          filename: filename,
-          total_rows: result.total_rows,
-          processed_rows: result.processed,
-          not_manufactured_count: result.not_manufactured,
-          flags_count: result.flags.length,
-          status: result.flags.length > 0 ? 'Review Needed' : 'Completed'
-        });
-      } catch (err) {
-        console.error('Failed to save processing history to Supabase:', err);
-      }
-    }
+  const wsOutput = xlsx.utils.aoa_to_sheet([outputHeaders, ...outputRows]);
+  wsOutput['!cols'] = [
+    {wch:6},{wch:10},{wch:40},{wch:16},{wch:8},
+    {wch:14},{wch:14},{wch:10},{wch:24},{wch:14},
+    {wch:18},{wch:30},{wch:30}
+  ];
+  xlsx.utils.book_append_sheet(wb, wsOutput, 'OUTPUT');
+
+  // Tab 2 — UNMATCHED
+  const unmatchedHeaders = [
+    'Sr No', 'Original Description', 'Detected Valve Type', 'Detected Size',
+    'Detected Class', 'Detected MOC', 'Reason'
+  ];
+  const unmatchedRows = result.processed_rows
+    .map((r, idx) => ({ r, idx }))
+    .filter(({ r }) => r.match_info === 'Unmatched')
+    .map(({ r, idx }) => [
+      idx + 1,
+      r.originalRow?.desc || '',
+      r.valveType,
+      r.size,
+      r.class,
+      r.moc,
+      result.flags.filter(f => f.row === idx + (isSingleColumn ? 1 : headerRowIndex + 2)).map(f => f.message).join('; ') || 'No matching product in catalogue'
+    ]);
+
+  const wsUnmatched = xlsx.utils.aoa_to_sheet([
+    ['These items were not found in your product catalogue.', 'Review and respond to customer separately.'],
+    [],
+    unmatchedHeaders,
+    ...unmatchedRows
+  ]);
+  wsUnmatched['!cols'] = [
+    {wch:6},{wch:40},{wch:16},{wch:8},
+    {wch:14},{wch:14},{wch:35}
+  ];
+  xlsx.utils.book_append_sheet(wb, wsUnmatched, 'UNMATCHED');
+
+  // Tab 3 — SUMMARY
+  let companyName = 'Unknown';
+  const sb = getSupabase();
+  if (userId && sb) {
+    const { data: userData } = await sb.from('users').select('company_name').eq('id', userId).single();
+    if (userData) companyName = userData.company_name;
   }
+
+  const ruleMatchCount = result.processed_rows.filter(r => r.match_info?.startsWith('Rule Match')).length;
+  const catalogueMatchCount = result.processed_rows.filter(r => r.match_info?.startsWith('Catalogue Match')).length;
+  const unmatchedCount = result.processed_rows.filter(r => r.match_info === 'Unmatched' || !r.match_info).length;
+
+  const summaryRows = [
+    ['Company/User:', companyName],
+    ['Processed by:', 'ValveIQ Pro'],
+    ['RFQ File:', filename || 'Unknown'],
+    ['Processed on:', new Date().toISOString()],
+    ['─────────────────────────────────────', ''],
+    ['Total rows in RFQ:', result.total_rows],
+    ['Matched by Rule:', ruleMatchCount],
+    ['Matched by Catalogue:', catalogueMatchCount],
+    ['Unmatched:', unmatchedCount],
+    ['─────────────────────────────────────', ''],
+    ['Flags raised:', result.flags.length],
+    ['Processing time:', 'N/A'],
+    ['─────────────────────────────────────', ''],
+    ['Catalogue items used:', catalogue.length],
+    ['Engine version:', '1.0.0']
+  ];
+
+  const wsSummary = xlsx.utils.aoa_to_sheet(summaryRows);
+  wsSummary['!cols'] = [{wch:28},{wch:30}];
+  xlsx.utils.book_append_sheet(wb, wsSummary, 'SUMMARY');
+
+  // Convert to base64 for download
+  const outBuffer = xlsx.write(wb, { type: 'base64', bookType: 'xlsx' });
+  result.download_url = `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${outBuffer}`;
 
   return result;
 }
 
-export function generateTrace(desc: string): string[] {
+export async function generateTrace(desc: string, userId?: string): Promise<string[]> {
   const trace: string[] = [];
   
   trace.push(`> Step 1 — Input received: "${desc}"`);
@@ -657,7 +1041,8 @@ export function generateTrace(desc: string): string[] {
   const classMatch = desc.match(/(?:CLASS|CL|#|LB)?\s*(150|300|600|800|900|1500|2500)/i);
   if (classMatch) rowData.rating = classMatch[1];
   
-  const { processedRow } = processSingleRow(rowData);
+  const { catalogue, notMfgList, userCustomRules } = await fetchUserContext(userId);
+  const { processedRow } = await processSingleRow(rowData, 1, catalogue, notMfgList, userCustomRules, false);
   
   trace.push(`> Step 2 — Valve type detected: "${processedRow.valveType}"`);
   trace.push(`> Step 3 — Size detected: ${processedRow.size ? `"${processedRow.size}"` : 'Not found'}`);
@@ -674,8 +1059,9 @@ export function generateTrace(desc: string): string[] {
   return trace;
 }
 
-export function generateFuzzyMatches(desc: string): any[] {
-  const { processedRow } = processSingleRow({ desc, rating: '', size: '', body: '', trim: '', endType: '', construct: '' });
+export async function generateFuzzyMatches(desc: string, userId?: string): Promise<any[]> {
+  const { catalogue, notMfgList, userCustomRules } = await fetchUserContext(userId);
+  const { processedRow } = await processSingleRow({ desc, rating: '', size: '', body: '', trim: '', endType: '', construct: '' }, 1, catalogue, notMfgList, userCustomRules, false);
   
   // Generate some mock matches based on the parsed data
   const matches = [
