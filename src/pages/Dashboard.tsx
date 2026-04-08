@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { FileSpreadsheet, Settings, Beaker, Activity, CheckCircle2, AlertTriangle, XCircle, User, Loader2 } from 'lucide-react';
+import { FileSpreadsheet, Settings, Beaker, Activity, CheckCircle2, AlertTriangle, XCircle, Loader2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 
@@ -11,7 +11,8 @@ export function Dashboard() {
     totalProcessed: 0,
     rowsAutoFilled: 0,
     flagsRaised: 0,
-    notManufactured: 0
+    notManufactured: 0,
+    catalogueSize: 0
   });
   const [recentActivity, setRecentActivity] = useState<any[]>([]);
 
@@ -29,12 +30,17 @@ export function Dashboard() {
           .order('created_at', { ascending: false })
           .limit(5);
 
+        // Fetch catalogue size
+        const { count: catalogueCount } = await supabase
+          .from('product_catalogue')
+          .select('*', { count: 'exact', head: true })
+          .eq('user_id', user.id);
+
         if (error) {
           console.error('Error fetching history:', error);
         } else if (history) {
           setRecentActivity(history);
           
-          // Calculate stats from history (in a real app, this might be an aggregate query)
           let totalProcessed = 0;
           let flagsRaised = 0;
           let notManufactured = 0;
@@ -49,7 +55,8 @@ export function Dashboard() {
             totalProcessed,
             rowsAutoFilled: totalProcessed - flagsRaised - notManufactured,
             flagsRaised,
-            notManufactured
+            notManufactured,
+            catalogueSize: catalogueCount || 0
           });
         }
       } catch (err) {
@@ -62,159 +69,164 @@ export function Dashboard() {
     fetchDashboardData();
   }, [user]);
 
+  const matchRate = statsData.totalProcessed > 0 
+    ? Math.round((statsData.rowsAutoFilled / statsData.totalProcessed) * 100) 
+    : 0;
+
   const stats = [
-    { label: 'Total RFQs Processed', value: statsData.totalProcessed.toLocaleString(), icon: <FileSpreadsheet className="w-6 h-6 text-blue-500" />, trend: 'All time' },
-    { label: 'Rows Auto-filled', value: statsData.rowsAutoFilled.toLocaleString(), icon: <CheckCircle2 className="w-6 h-6 text-green-500" />, trend: 'Successfully matched' },
-    { label: 'Flags Raised', value: statsData.flagsRaised.toLocaleString(), icon: <AlertTriangle className="w-6 h-6 text-yellow-500" />, trend: 'Requires review' },
-    { label: 'Not-Manufactured', value: statsData.notManufactured.toLocaleString(), icon: <XCircle className="w-6 h-6 text-red-500" />, trend: 'Out of scope' },
+    { label: 'Total RFQs Processed', value: statsData.totalProcessed.toLocaleString(), icon: <FileSpreadsheet className="w-5 h-5 text-blue-500" /> },
+    { label: 'Rows Auto-filled', value: statsData.rowsAutoFilled.toLocaleString(), icon: <CheckCircle2 className="w-5 h-5 text-[var(--accent)]" /> },
+    { label: 'Flags Raised', value: statsData.flagsRaised.toLocaleString(), icon: <AlertTriangle className="w-5 h-5 text-yellow-500" /> },
+    { label: 'Not-Manufactured', value: statsData.notManufactured.toLocaleString(), icon: <XCircle className="w-5 h-5 text-red-500" /> },
   ];
 
   return (
-    <div className="max-w-7xl mx-auto mt-8 px-6 space-y-8 pb-20">
+    <div className="max-w-7xl mx-auto mt-8 px-4 sm:px-6 space-y-8 pb-20">
       {/* Access Restricted Banner */}
       {(accessPending || accessDenied) && (
-        <div className="bg-yellow-50 dark:bg-yellow-900/30 border-l-4 border-yellow-400 p-4 rounded-r-lg shadow-sm">
+        <div className="v-status-strip p-4 border-yellow-500/30 bg-yellow-500/10">
           <div className="flex items-start">
-            <div className="flex-shrink-0">
-              <AlertTriangle className="h-5 w-5 text-yellow-400" />
-            </div>
-            <div className="ml-3">
-              <h3 className="text-sm font-medium text-yellow-800 dark:text-yellow-300">
+            <AlertTriangle className="h-5 w-5 text-yellow-500 mr-3" />
+            <div>
+              <h3 className="text-sm font-medium text-yellow-600 dark:text-yellow-400">
                 Access Restricted
               </h3>
-              <div className="mt-2 text-sm text-yellow-700 dark:text-yellow-400">
-                <p>
-                  Your account is currently pending approval or lacks an active subscription. 
-                  Some features may be limited until an administrator approves your access.
-                </p>
-              </div>
+              <p className="mt-1 text-sm text-yellow-600/80 dark:text-yellow-400/80">
+                Your account is currently pending approval or lacks an active subscription. 
+                Some features may be limited until an administrator approves your access.
+              </p>
             </div>
           </div>
         </div>
       )}
 
-      {/* Header & Profile */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
-        <div>
-          <h1 className="text-3xl font-display font-bold text-slate-900 dark:text-[#E6EDF3]">
-            ValveIQ <span className="text-transparent bg-clip-text bg-gradient-to-r from-[#00A8FF] to-blue-400 dark:from-[#7EE787] dark:to-[#238636]">Pro</span> Dashboard
-          </h1>
-          <p className="text-slate-600 dark:text-[#8B949E] mt-1">Precision automation for valve engineering workflows</p>
-        </div>
+      {/* Hero Greeting */}
+      <div className="animate-fade-up">
+        <h1 className="text-3xl font-display font-bold text-[var(--text)]">
+          Welcome back, <span className="text-[var(--accent)]">{user?.user_metadata?.full_name?.split(' ')[0] || 'Engineer'}</span>
+        </h1>
+        <p className="text-[var(--text3)] mt-2">Here's what's happening with your valve engineering workflows today.</p>
         
-        <div className="bg-white dark:bg-[#161B22] p-4 rounded-xl border border-slate-200 dark:border-[#21262D] shadow-sm flex items-center gap-4">
-          <div className="w-12 h-12 rounded-full bg-blue-100 dark:bg-[#238636] flex items-center justify-center text-blue-600 dark:text-white font-bold text-lg">
-            {user?.email ? user.email.substring(0, 2).toUpperCase() : 'US'}
+        <div className="flex flex-wrap gap-6 mt-6">
+          <div className="flex items-center gap-3">
+            <div className="text-4xl font-display font-bold text-[var(--text)]">{isLoading ? '-' : recentActivity.length}</div>
+            <div className="text-sm text-[var(--text3)] leading-tight">RFQs<br/>Processed</div>
           </div>
-          <div>
-            <div className="font-semibold text-slate-900 dark:text-[#E6EDF3]">{user?.user_metadata?.full_name || user?.email || 'Demo User'}</div>
-            <div className="text-sm text-slate-500 dark:text-[#8B949E]">{user?.user_metadata?.company || 'EPC Engineering Corp'}</div>
-            <div className="text-xs text-blue-500 dark:text-[#58A6FF] font-medium">Senior Valve Engineer</div>
+          <div className="w-px h-10 bg-[var(--border)]"></div>
+          <div className="flex items-center gap-3">
+            <div className="text-4xl font-display font-bold text-[var(--accent)]">{isLoading ? '-' : `${matchRate}%`}</div>
+            <div className="text-sm text-[var(--text3)] leading-tight">Average<br/>Match Rate</div>
+          </div>
+          <div className="w-px h-10 bg-[var(--border)]"></div>
+          <div className="flex items-center gap-3">
+            <div className="text-4xl font-display font-bold text-blue-500">{isLoading ? '-' : statsData.catalogueSize}</div>
+            <div className="text-sm text-[var(--text3)] leading-tight">Catalogue<br/>Items</div>
           </div>
         </div>
       </div>
+
+      <div className="v-divider animate-fade-up delay-100">Quick Actions</div>
 
       {/* Quick Actions */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Link to="/upload" className="flex items-center gap-3 bg-white dark:bg-[#161B22] p-4 rounded-xl border border-slate-200 dark:border-[#21262D] shadow-sm hover:border-blue-500 dark:hover:border-[#7EE787] dark:hover:shadow-[0_0_20px_rgba(126,231,135,0.08)] transition-all group">
-          <div className="p-3 rounded-lg bg-blue-50 dark:bg-[rgba(126,231,135,0.1)] group-hover:bg-blue-100 dark:group-hover:bg-[rgba(126,231,135,0.2)] transition-colors">
-            <FileSpreadsheet className="w-6 h-6 text-blue-600 dark:text-[#7EE787]" />
-          </div>
-          <div>
-            <div className="font-semibold text-slate-900 dark:text-[#E6EDF3]">Upload RFQ</div>
-            <div className="text-sm text-slate-500 dark:text-[#8B949E]">Process new Excel file</div>
-          </div>
-        </Link>
-        
-        <Link to="/rules" className="flex items-center gap-3 bg-white dark:bg-[#161B22] p-4 rounded-xl border border-slate-200 dark:border-[#21262D] shadow-sm hover:border-purple-500 dark:hover:border-[#7EE787] dark:hover:shadow-[0_0_20px_rgba(126,231,135,0.08)] transition-all group">
-          <div className="p-3 rounded-lg bg-purple-50 dark:bg-[rgba(126,231,135,0.1)] group-hover:bg-purple-100 dark:group-hover:bg-[rgba(126,231,135,0.2)] transition-colors">
-            <Settings className="w-6 h-6 text-purple-600 dark:text-[#7EE787]" />
-          </div>
-          <div>
-            <div className="font-semibold text-slate-900 dark:text-[#E6EDF3]">View Rules</div>
-            <div className="text-sm text-slate-500 dark:text-[#8B949E]">Manage engine logic</div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 animate-fade-up delay-100">
+        <Link to="/upload" className="v-glow-card-wrapper group">
+          <div className="v-glow-card flex items-center gap-4 h-full">
+            <div className="p-3 rounded-lg bg-[var(--bg3)] text-[var(--text)] group-hover:text-[var(--accent)] transition-colors">
+              <FileSpreadsheet className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="font-semibold text-[var(--text)]">Upload RFQ</div>
+              <div className="text-sm text-[var(--text3)]">Process new Excel file</div>
+            </div>
           </div>
         </Link>
         
-        <Link to="/test" className="flex items-center gap-3 bg-white dark:bg-[#161B22] p-4 rounded-xl border border-slate-200 dark:border-[#21262D] shadow-sm hover:border-green-500 dark:hover:border-[#7EE787] dark:hover:shadow-[0_0_20px_rgba(126,231,135,0.08)] transition-all group">
-          <div className="p-3 rounded-lg bg-green-50 dark:bg-[rgba(126,231,135,0.1)] group-hover:bg-green-100 dark:group-hover:bg-[rgba(126,231,135,0.2)] transition-colors">
-            <Beaker className="w-6 h-6 text-green-600 dark:text-[#7EE787]" />
+        <Link to="/rules" className="v-glow-card-wrapper group">
+          <div className="v-glow-card flex items-center gap-4 h-full">
+            <div className="p-3 rounded-lg bg-[var(--bg3)] text-[var(--text)] group-hover:text-[var(--accent)] transition-colors">
+              <Settings className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="font-semibold text-[var(--text)]">View Rules</div>
+              <div className="text-sm text-[var(--text3)]">Manage engine logic</div>
+            </div>
           </div>
-          <div>
-            <div className="font-semibold text-slate-900 dark:text-[#E6EDF3]">Run Test</div>
-            <div className="text-sm text-slate-500 dark:text-[#8B949E]">Test engine accuracy</div>
+        </Link>
+        
+        <Link to="/test" className="v-glow-card-wrapper group">
+          <div className="v-glow-card flex items-center gap-4 h-full">
+            <div className="p-3 rounded-lg bg-[var(--bg3)] text-[var(--text)] group-hover:text-[var(--accent)] transition-colors">
+              <Beaker className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="font-semibold text-[var(--text)]">Run Test</div>
+              <div className="text-sm text-[var(--text3)]">Test engine accuracy</div>
+            </div>
           </div>
         </Link>
       </div>
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="v-divider animate-fade-up delay-200">Processing Stats</div>
+
+      {/* Stats Cards (Bento grid) */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 animate-fade-up delay-200">
         {stats.map((stat, idx) => (
-          <div key={idx} className="relative bg-white dark:bg-[#161B22] p-6 rounded-xl border border-slate-200 dark:border-[#21262D] shadow-sm hover:border-slate-300 dark:hover:border-[#7EE787] dark:hover:shadow-[0_0_20px_rgba(126,231,135,0.08)] transition-all">
-            <div className="absolute top-0 left-0 w-4 h-4 hidden dark:block border-t-2 border-l-2 border-[#7EE787] opacity-40 rounded-tl-xl" />
-            <div className="absolute bottom-0 right-0 w-4 h-4 hidden dark:block border-b-2 border-r-2 border-[#7EE787] opacity-40 rounded-br-xl" />
-            <div className="flex justify-between items-start mb-4">
-              <div className="p-2 rounded-lg bg-slate-50 dark:bg-[rgba(126,231,135,0.1)]">
-                {stat.icon}
-              </div>
+          <div key={idx} className="v-stat-card flex flex-col items-center justify-center py-6">
+            <div className="mb-3">{stat.icon}</div>
+            <div className="v-stat-number text-3xl text-[var(--text)] mb-1">
+              {isLoading ? <Loader2 className="w-6 h-6 animate-spin text-[var(--text3)] mx-auto" /> : stat.value}
             </div>
-            <div className="text-3xl font-display font-bold text-slate-900 dark:text-[#7EE787] mb-1">
-              {isLoading ? <Loader2 className="w-6 h-6 animate-spin text-slate-400 dark:text-[#7EE787]" /> : stat.value}
-            </div>
-            <div className="text-sm font-medium text-slate-600 dark:text-[#8B949E]">{stat.label}</div>
-            <div className="text-xs text-slate-500 dark:text-[#484F58] mt-2">
-              {statsData.totalProcessed === 0 ? 'No RFQs processed yet' : stat.trend}
-            </div>
+            <div className="text-xs text-[var(--text3)] uppercase tracking-wider">{stat.label}</div>
           </div>
         ))}
       </div>
 
+      <div className="v-divider animate-fade-up delay-300">Recent Activity</div>
+
       {/* Recent Activity */}
-      <div className="bg-white dark:bg-[#161B22] rounded-xl border border-slate-200 dark:border-[#21262D] shadow-sm overflow-hidden flex flex-col">
-        <div className="p-6 border-b border-slate-200 dark:border-[#21262D] flex items-center gap-3 bg-slate-50 dark:bg-[#0D1117]">
-          <Activity className="w-5 h-5 text-slate-500 dark:text-[#8B949E]" />
-          <h3 className="text-lg font-display font-bold text-slate-900 dark:text-[#E6EDF3]">Recent Activity</h3>
+      <div className="v-glow-card p-0 overflow-hidden flex flex-col animate-fade-up delay-300">
+        <div className="p-5 border-b border-[var(--border)] flex items-center gap-3 bg-[var(--bg3)]">
+          <Activity className="w-5 h-5 text-[var(--text3)]" />
+          <h3 className="text-sm font-display font-bold text-[var(--text)] uppercase tracking-wider">Processing History</h3>
         </div>
-        <div className="overflow-x-auto">
+        <div className="v-table overflow-x-auto border-none rounded-none">
           <table className="w-full text-left text-sm">
-            <thead className="bg-slate-50 dark:bg-[#0D1117] text-slate-600 dark:text-[#8B949E] font-semibold text-xs uppercase tracking-wider">
+            <thead>
               <tr>
-                <th className="px-6 py-4 border-b border-slate-200 dark:border-[#21262D]">Filename</th>
-                <th className="px-6 py-4 border-b border-slate-200 dark:border-[#21262D]">Date</th>
-                <th className="px-6 py-4 border-b border-slate-200 dark:border-[#21262D]">Rows</th>
-                <th className="px-6 py-4 border-b border-slate-200 dark:border-[#21262D]">Status</th>
+                <th>Filename</th>
+                <th>Date</th>
+                <th>Rows</th>
+                <th>Status</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-200 dark:divide-[#21262D] text-slate-700 dark:text-[#E6EDF3]">
+            <tbody className="text-[var(--text2)]">
               {isLoading ? (
                 <tr>
-                  <td colSpan={4} className="px-6 py-8 text-center text-slate-500 dark:text-[#8B949E]">
+                  <td colSpan={4} className="px-6 py-8 text-center text-[var(--text3)]">
                     <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2" />
                     Loading activity...
                   </td>
                 </tr>
               ) : recentActivity.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="px-6 py-8 text-center text-slate-500 dark:text-[#8B949E]">
+                  <td colSpan={4} className="px-6 py-8 text-center text-[var(--text3)]">
                     No recent activity found. Upload an RFQ to get started.
                   </td>
                 </tr>
               ) : (
                 recentActivity.map((activity) => (
-                  <tr key={activity.id} className="hover:bg-slate-50 dark:hover:bg-[rgba(126,231,135,0.04)] transition-colors">
-                    <td className="px-6 py-4 font-medium text-slate-900 dark:text-[#E6EDF3] flex items-center gap-2">
-                      <FileSpreadsheet className="w-4 h-4 text-blue-500 dark:text-[#58A6FF]" />
+                  <tr key={activity.id}>
+                    <td className="font-medium text-[var(--text)] flex items-center gap-2">
+                      <FileSpreadsheet className="w-4 h-4 text-[var(--text3)]" />
                       {activity.filename}
                     </td>
-                    <td className="px-6 py-4 text-slate-500 dark:text-[#8B949E]">
-                      {new Date(activity.created_at).toLocaleDateString()}
-                    </td>
-                    <td className="px-6 py-4">{activity.total_rows}</td>
-                    <td className="px-6 py-4">
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                    <td>{new Date(activity.created_at).toLocaleDateString()}</td>
+                    <td>{activity.total_rows}</td>
+                    <td>
+                      <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium ${
                         activity.status === 'Completed' 
-                          ? 'bg-green-100 text-green-800 dark:bg-[#1B4721] dark:text-[#3FB950]' 
-                          : 'bg-yellow-100 text-yellow-800 dark:bg-[#341A00] dark:text-[#F0883E]'
+                          ? 'bg-[rgba(34,197,94,0.1)] text-[var(--accent)]' 
+                          : 'bg-yellow-500/10 text-yellow-500'
                       }`}>
                         {activity.status || 'Completed'}
                       </span>

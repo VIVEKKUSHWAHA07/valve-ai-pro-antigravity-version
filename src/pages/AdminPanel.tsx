@@ -223,109 +223,111 @@ export function AdminPanel() {
   if (authLoading || !isAdmin) return null;
 
   return (
-    <div className="max-w-7xl mx-auto mt-8 px-6 space-y-8 pb-20">
+    <div className="max-w-7xl mx-auto mt-8 px-4 sm:px-6 space-y-8 pb-20">
       <button 
         onClick={() => navigate(-1)}
-        className="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-700 dark:hover:text-[#E6EDF3] mb-4"
+        className="flex items-center gap-2 text-sm text-[var(--text3)] hover:text-[var(--text)] mb-4 transition-colors"
       >
         ← Back
       </button>
       
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 animate-fade-up">
         <div>
-          <h1 className="text-3xl font-display font-bold text-slate-900 dark:text-[#E6EDF3] flex items-center gap-3">
-            <Shield className="w-8 h-8 text-red-500 dark:text-[#F85149]" />
+          <h1 className="text-3xl font-display font-bold text-[var(--text)] flex items-center gap-3">
+            <Shield className="w-8 h-8 text-red-500" />
             Admin Panel
           </h1>
-          <p className="text-slate-600 dark:text-[#8B949E] mt-1">Manage users, access, and plans</p>
+          <p className="text-[var(--text3)] mt-1">Manage users, access, and plans</p>
         </div>
       </div>
 
       {error && (
-        <div className="p-4 bg-red-50 dark:bg-[#F85149]/10 border border-red-200 dark:border-[#F85149]/30 rounded-xl flex items-start gap-3 text-red-600 dark:text-[#F85149]">
+        <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-xl flex items-start gap-3 text-red-500 animate-fade-up">
           <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
           <p>{error}</p>
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-fade-up delay-100">
         <div className="lg:col-span-1 space-y-6">
-          <div className="bg-yellow-50 dark:bg-yellow-900/10 border border-yellow-200 dark:border-yellow-800 rounded-xl overflow-hidden mb-6">
-            <div className="px-4 py-3 border-b border-yellow-200 dark:border-yellow-800 flex items-center gap-2">
-              <Clock className="w-4 h-4 text-yellow-600" />
-              <h3 className="font-semibold text-yellow-800 dark:text-yellow-400 text-sm">
+          <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl overflow-hidden mb-6">
+            <div className="px-4 py-3 border-b border-yellow-500/30 flex items-center gap-2 bg-yellow-500/5">
+              <Clock className="w-4 h-4 text-yellow-500" />
+              <h3 className="font-semibold text-yellow-500 text-sm">
                 Pending Access Requests ({pendingRequests.length})
               </h3>
             </div>
             
             {pendingRequests.length === 0 ? (
-              <p className="px-4 py-6 text-sm text-center text-slate-400">
+              <p className="px-4 py-6 text-sm text-center text-[var(--text3)]">
                 No pending requests
               </p>
             ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-xs text-slate-500 uppercase">
-                    <th className="px-4 py-3 text-left">Email</th>
-                    <th className="px-4 py-3 text-left">Requested</th>
-                    <th className="px-4 py-3 text-left">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pendingRequests.map(req => (
-                    <tr key={req.id}>
-                      <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">
-                        {req.email}
-                      </td>
-                      <td className="px-4 py-3 text-slate-500 text-xs">
-                        {new Date(req.requested_at).toLocaleDateString()}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => approveRequest(req.email, req.id)}
-                            className="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded-lg text-xs font-medium"
-                          >
-                            ✓ Approve
-                          </button>
-                          <button
-                            onClick={() => rejectRequest(req.id)}
-                            className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg text-xs font-medium"
-                          >
-                            ✕ Reject
-                          </button>
-                        </div>
-                      </td>
+              <div className="v-table overflow-x-auto border-none rounded-none">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr>
+                      <th className="text-left">Email</th>
+                      <th className="text-left">Requested</th>
+                      <th className="text-left">Action</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="text-[var(--text2)]">
+                    {pendingRequests.map(req => (
+                      <tr key={req.id}>
+                        <td className="font-medium text-[var(--text)]">
+                          {req.email}
+                        </td>
+                        <td className="text-xs">
+                          {new Date(req.requested_at).toLocaleDateString()}
+                        </td>
+                        <td>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => approveRequest(req.email, req.id)}
+                              className="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded-lg text-xs font-medium transition-colors"
+                            >
+                              ✓ Approve
+                            </button>
+                            <button
+                              onClick={() => rejectRequest(req.id)}
+                              className="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg text-xs font-medium transition-colors"
+                            >
+                              ✕ Reject
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
 
-          <div className="bg-white dark:bg-[#161B22] rounded-xl border border-slate-200 dark:border-[#21262D] shadow-sm p-6">
-            <h2 className="text-lg font-bold text-slate-900 dark:text-[#E6EDF3] mb-4 flex items-center gap-2">
-              <Users className="w-5 h-5 text-[#7EE787]" />
+          <div className="v-glow-card p-6">
+            <h2 className="text-lg font-bold text-[var(--text)] mb-4 flex items-center gap-2">
+              <Users className="w-5 h-5 text-[var(--accent)]" />
               Grant Access
             </h2>
             <form onSubmit={handleGrantAccess} className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-slate-700 dark:text-[#E6EDF3] mb-1">Email Address</label>
+                <label className="block text-sm font-medium text-[var(--text)] mb-1">Email Address</label>
                 <input
                   type="email"
                   required
                   value={newEmail}
                   onChange={e => setNewEmail(e.target.value)}
-                  className="w-full rounded-lg border-slate-300 dark:border-[#21262D] bg-slate-50 dark:bg-[#0D1117] text-slate-900 dark:text-[#E6EDF3] focus:ring-[#7EE787] focus:border-[#7EE787]"
+                  className="v-input w-full"
                   placeholder="user@company.com"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-700 dark:text-[#E6EDF3] mb-1">Plan</label>
+                <label className="block text-sm font-medium text-[var(--text)] mb-1">Plan</label>
                 <select
                   value={newPlan}
                   onChange={e => setNewPlan(e.target.value)}
-                  className="w-full rounded-lg border-slate-300 dark:border-[#21262D] bg-slate-50 dark:bg-[#0D1117] text-slate-900 dark:text-[#E6EDF3] focus:ring-[#7EE787] focus:border-[#7EE787]"
+                  className="v-input w-full"
                 >
                   <option value="free">Free (3 runs/mo)</option>
                   <option value="starter">Starter (20 runs/mo)</option>
@@ -335,20 +337,20 @@ export function AdminPanel() {
               </div>
               {newPlan === 'custom' && (
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 dark:text-[#E6EDF3] mb-1">Custom Run Limit</label>
+                  <label className="block text-sm font-medium text-[var(--text)] mb-1">Custom Run Limit</label>
                   <input
                     type="number"
                     min="1"
                     value={newCustomLimit}
                     onChange={e => setNewCustomLimit(parseInt(e.target.value) || 10)}
-                    className="w-full rounded-lg border-slate-300 dark:border-[#21262D] bg-slate-50 dark:bg-[#0D1117] text-slate-900 dark:text-[#E6EDF3] focus:ring-[#7EE787] focus:border-[#7EE787]"
+                    className="v-input w-full"
                   />
                 </div>
               )}
               <button
                 type="submit"
                 disabled={granting}
-                className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-[#238636] to-[#2EA043] hover:from-[#2EA043] hover:to-[#3FB950] shadow-[0_0_15px_rgba(126,231,135,0.2)] hover:shadow-[0_0_25px_rgba(126,231,135,0.4)] text-white px-4 py-2 rounded-lg font-medium transition-all disabled:opacity-50"
+                className="v-btn-primary w-full flex items-center justify-center gap-2 px-4 py-2 font-medium disabled:opacity-50"
               >
                 {granting ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
                 Grant Access
@@ -358,58 +360,58 @@ export function AdminPanel() {
         </div>
 
         <div className="lg:col-span-2">
-          <div className="bg-white dark:bg-[#161B22] rounded-xl border border-slate-200 dark:border-[#21262D] shadow-sm overflow-hidden">
-            <div className="p-4 border-b border-slate-200 dark:border-[#21262D] bg-slate-50 dark:bg-[#0D1117] flex justify-between items-center">
-              <h3 className="font-semibold text-slate-900 dark:text-[#E6EDF3]">Access List</h3>
+          <div className="v-glow-card p-0 overflow-hidden flex flex-col">
+            <div className="p-4 border-b border-[var(--border)] bg-[var(--bg3)] flex justify-between items-center">
+              <h3 className="font-semibold text-[var(--text)]">Access List</h3>
               <div className="relative">
-                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text3)]" />
                 <input 
                   type="text" 
                   placeholder="Search emails..." 
-                  className="pl-9 pr-4 py-1.5 rounded-lg border-slate-300 dark:border-[#21262D] bg-white dark:bg-[#0D1117] text-sm focus:ring-[#7EE787] focus:border-[#7EE787] dark:text-[#E6EDF3]"
+                  className="v-input pl-9 pr-4 py-1.5 text-sm"
                 />
               </div>
             </div>
-            <div className="overflow-x-auto">
+            <div className="v-table overflow-x-auto border-none rounded-none">
               {loading ? (
-                <div className="flex justify-center p-8"><Loader2 className="w-8 h-8 animate-spin text-[#7EE787]" /></div>
+                <div className="flex justify-center p-8"><Loader2 className="w-8 h-8 animate-spin text-[var(--accent)]" /></div>
               ) : (
                 <table className="w-full text-sm text-left">
-                  <thead className="text-xs text-slate-500 dark:text-[#8B949E] uppercase bg-slate-50 dark:bg-[#0D1117]">
+                  <thead>
                     <tr>
-                      <th className="px-4 py-3">Email</th>
-                      <th className="px-4 py-3">Plan</th>
-                      <th className="px-4 py-3">Status</th>
-                      <th className="px-4 py-3 text-right">Actions</th>
+                      <th>Email</th>
+                      <th>Plan</th>
+                      <th>Status</th>
+                      <th className="text-right">Actions</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-200 dark:divide-[#21262D]">
+                  <tbody className="text-[var(--text2)]">
                     {users.map((u, idx) => (
-                      <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-[rgba(126,231,135,0.04)]">
-                        <td className="px-4 py-3 font-medium text-slate-900 dark:text-[#E6EDF3]">{u.email}</td>
-                        <td className="px-4 py-3 capitalize dark:text-[#E6EDF3]">
+                      <tr key={idx}>
+                        <td className="font-medium text-[var(--text)]">{u.email}</td>
+                        <td className="capitalize">
                           {u.plan}
                           {u.plan === 'custom' && ` (${u.custom_run_limit})`}
                         </td>
-                        <td className="px-4 py-3">
+                        <td>
                           {u.active ? (
-                            <span className="px-2 py-1 bg-green-100 text-green-800 dark:bg-[rgba(126,231,135,0.1)] dark:text-[#7EE787] rounded text-xs font-medium border border-transparent dark:border-[#7EE787]/20">Active</span>
+                            <span className="px-2 py-1 bg-[rgba(34,197,94,0.1)] text-[var(--accent)] rounded text-xs font-medium border border-[rgba(34,197,94,0.2)]">Active</span>
                           ) : (
-                            <span className="px-2 py-1 bg-red-100 text-red-800 dark:bg-[#F85149]/10 dark:text-[#F85149] rounded text-xs font-medium border border-transparent dark:border-[#F85149]/20">Revoked</span>
+                            <span className="px-2 py-1 bg-red-500/10 text-red-500 rounded text-xs font-medium border border-red-500/20">Revoked</span>
                           )}
                         </td>
-                        <td className="px-4 py-3 text-right">
+                        <td className="text-right">
                           {u.active ? (
                             <button 
                               onClick={() => handleRevokeAccess(u.email)}
-                              className="text-red-600 hover:text-red-800 dark:text-[#F85149] dark:hover:text-red-400 text-xs font-medium"
+                              className="text-red-500 hover:text-red-400 text-xs font-medium transition-colors"
                             >
                               Revoke
                             </button>
                           ) : (
                             <button 
                               onClick={() => handleRestoreAccess(u.email)}
-                              className="text-green-600 hover:text-green-800 dark:text-[#7EE787] dark:hover:text-green-400 text-xs font-medium"
+                              className="text-[var(--accent)] hover:text-green-400 text-xs font-medium transition-colors"
                             >
                               Restore
                             </button>
@@ -419,7 +421,7 @@ export function AdminPanel() {
                     ))}
                     {users.length === 0 && (
                       <tr>
-                        <td colSpan={4} className="px-4 py-8 text-center text-slate-500 dark:text-[#8B949E]">No users found.</td>
+                        <td colSpan={4} className="px-4 py-8 text-center text-[var(--text3)]">No users found.</td>
                       </tr>
                     )}
                   </tbody>

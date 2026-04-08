@@ -100,7 +100,8 @@ app.post('/api/upload-rfq', upload.single('file'), async (req, res) => {
     const columnMap = req.body.columnMap ? JSON.parse(req.body.columnMap) : undefined;
 
     const authHeader = req.headers.authorization;
-    let catalogueMap: any[] = [];
+    let fetchedCatalogueItems: any[] = [];
+    let userRules: any[] = [];
     
     if (authHeader && userId) {
       const token = authHeader.replace('Bearer ', '');
@@ -111,18 +112,34 @@ app.post('/api/upload-rfq', upload.single('file'), async (req, res) => {
         global: { headers: { Authorization: `Bearer ${token}` } }
       });
       
-      const { data: catalogueItems } = await supabase
-        .from('product_catalogue')
+      const { data: catalogueItems, error } = await supabase
+        .from('catalogue_items')
         .select('*')
-        .eq('user_id', userId);
+        .eq('user_id', userId)
+        .range(0, 9999);
+        
+      console.log('upload-rfq catalogue fetch:', catalogueItems?.length, error);
         
       if (catalogueItems) {
-        catalogueMap = catalogueItems;
+        fetchedCatalogueItems = catalogueItems;
+      }
+
+      const { data: rules } = await supabase
+        .from('user_rules')
+        .select('*')
+        .eq('user_id', userId)
+        .range(0, 9999);
+      
+      if (rules) {
+        userRules = rules;
       }
     }
 
-    const result = await processRFQ(req.file.buffer, userId, filename, columnMap, catalogueMap);
-    res.json(result);
+    const result = await processRFQ(req.file.buffer, columnMap || {}, fetchedCatalogueItems, userRules, filename, userId);
+    
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="Working_Sheet.xlsx"`);
+    res.send(result);
   } catch (error: any) {
     console.error('Error processing RFQ:', error);
     res.status(500).json({ error: error.message || 'Failed to process RFQ' });
@@ -325,8 +342,47 @@ app.post('/api/test/batch', upload.single('file'), async (req, res) => {
     const filename = req.file.originalname;
     const columnMap = req.body.columnMap ? JSON.parse(req.body.columnMap) : undefined;
 
-    const result = await processRFQ(req.file.buffer, userId, filename, columnMap);
-    res.json(result);
+    const authHeader = req.headers.authorization;
+    let fetchedCatalogueItems: any[] = [];
+    let userRules: any[] = [];
+    
+    if (authHeader && userId) {
+      const token = authHeader.replace('Bearer ', '');
+      const SUPABASE_URL = process.env.SUPABASE_URL || 'https://stqkpgkyvtmvvijilgmc.supabase.co';
+      const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN0cWtwZ2t5dnRtdnZpamlsZ21jIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NjcyMzYsImV4cCI6MjA5MDI0MzIzNn0.92FxL9YuEwesIb1T-vowKqY1no58a0FKIGwBqlMu-uw';
+      
+      const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        global: { headers: { Authorization: `Bearer ${token}` } }
+      });
+      
+      const { data: catalogueItems, error } = await supabase
+        .from('catalogue_items')
+        .select('*')
+        .eq('user_id', userId)
+        .range(0, 9999);
+        
+      console.log('test/batch catalogue fetch:', catalogueItems?.length, error);
+        
+      if (catalogueItems) {
+        fetchedCatalogueItems = catalogueItems;
+      }
+
+      const { data: rules } = await supabase
+        .from('user_rules')
+        .select('*')
+        .eq('user_id', userId)
+        .range(0, 9999);
+      
+      if (rules) {
+        userRules = rules;
+      }
+    }
+
+    const result = await processRFQ(req.file.buffer, columnMap || {}, fetchedCatalogueItems, userRules, filename, userId);
+    
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="Working_Sheet.xlsx"`);
+    res.send(result);
   } catch (error: any) {
     console.error('Error processing batch RFQ:', error);
     res.status(500).json({ error: error.message || 'Failed to process batch RFQ' });

@@ -142,7 +142,6 @@ export function Upload() {
         setResult(data);
 
         if (user) {
-          // Save to processing_history with download data
           await supabase.from('processing_history').insert({
             user_id: user.id,
             filename: file.name,
@@ -153,7 +152,6 @@ export function Upload() {
             download_data: JSON.stringify(data.processed_rows)
           });
 
-          // Increment usage counter
           await supabase.rpc('increment_usage', { p_user_id: user.id });
         }
       }
@@ -175,163 +173,161 @@ export function Upload() {
   };
 
   return (
-    <div className="max-w-7xl mx-auto mt-12 px-6 space-y-10 pb-20">
+    <div className="max-w-7xl mx-auto mt-12 px-4 sm:px-6 space-y-10 pb-20">
       <button 
         onClick={() => navigate(-1)}
-        className="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-700 dark:hover:text-[#E6EDF3] mb-4"
+        className="flex items-center gap-2 text-sm text-[var(--text3)] hover:text-[var(--text)] mb-4 transition-colors"
       >
         ← Back
       </button>
-      <header className="text-center space-y-4 mb-16">
-        <h2 className="text-4xl md:text-5xl font-display font-bold tracking-tight text-slate-900 dark:text-white">
-          ValveIQ <span className="text-transparent bg-clip-text bg-gradient-to-r from-[#00A8FF] to-blue-400">Pro</span>
+      <header className="text-center space-y-4 mb-16 animate-fade-up">
+        <h2 className="text-4xl md:text-5xl font-display font-bold tracking-tight text-[var(--text)]">
+          ValveIQ <span className="text-[var(--accent)]">Pro</span>
         </h2>
-        <p className="text-slate-600 dark:text-[#8B949E] max-w-2xl mx-auto text-lg">
+        <p className="text-[var(--text3)] max-w-2xl mx-auto text-lg">
           Upload your RFQ Excel file and let our deterministic engineering rules engine auto-fill your technical working sheet.
         </p>
       </header>
 
-      <div className="bg-white dark:bg-[#161B22] p-8 rounded-2xl border border-slate-200 dark:border-[#21262D] shadow-lg relative overflow-hidden group">
-        <div className="absolute top-0 left-0 w-4 h-4 hidden dark:block border-t-2 border-l-2 border-[#7EE787] opacity-40 rounded-tl-2xl" />
-        <div className="absolute bottom-0 right-0 w-4 h-4 hidden dark:block border-b-2 border-r-2 border-[#7EE787] opacity-40 rounded-br-2xl" />
-        <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-[#00A8FF] dark:via-[#7EE787] to-transparent opacity-0 dark:opacity-50 group-hover:opacity-100 transition-opacity duration-500"></div>
-        
-        <div className="flex items-center gap-3 mb-8">
-          <div className="p-2 rounded-lg bg-blue-50 dark:bg-[rgba(126,231,135,0.1)] border border-blue-100 dark:border-[rgba(126,231,135,0.2)]">
-            <FileSpreadsheet className="w-5 h-5 text-[#00A8FF] dark:text-[#7EE787]" />
-          </div>
-          <h2 className="text-xl font-display font-semibold text-slate-900 dark:text-[#E6EDF3] tracking-wide">Upload RFQ Excel</h2>
-        </div>
-        
-        <div className="border-2 border-dashed border-slate-300 dark:border-[#30363D] rounded-xl p-12 flex flex-col items-center justify-center text-center bg-slate-50 dark:bg-[#0D1117] hover:bg-slate-100 dark:hover:bg-[#161B22] hover:border-[#00A8FF]/30 dark:hover:border-[#7EE787]/50 transition-all group/dropzone">
-          <div className="w-16 h-16 rounded-full bg-blue-50 dark:bg-[rgba(126,231,135,0.05)] flex items-center justify-center mb-4 group-hover/dropzone:scale-110 transition-transform duration-300">
-            <UploadIcon className="w-8 h-8 text-[#00A8FF]/70 dark:text-[#7EE787]/70 group-hover/dropzone:text-[#00A8FF] dark:group-hover/dropzone:text-[#7EE787]" />
-          </div>
-          <p className="text-sm text-slate-500 dark:text-[#8B949E] mb-6 max-w-md">Upload an Excel file containing RFQ descriptions. Ensure columns like Item Description, Size, Rating, and Body/MOC are present.</p>
-          
-          <input 
-            type="file" 
-            accept=".xlsx, .xls"
-            onChange={handleFileSelect}
-            className="hidden"
-            ref={fileInputRef}
-          />
-          
-          <button 
-            onClick={() => fileInputRef.current?.click()}
-            className="px-6 py-2.5 bg-white dark:bg-[#21262D] hover:bg-slate-50 dark:hover:bg-[#30363D] border border-slate-200 dark:border-[#30363D] rounded-lg text-sm font-medium text-slate-700 dark:text-[#E6EDF3] transition-colors focus:outline-none focus:ring-2 focus:ring-[#00A8FF]/50 dark:focus:ring-[#7EE787]/50 shadow-sm"
-          >
-            Select File
-          </button>
-          
-          {file && !mappingConfirmed && (
-            <div className="mt-6 px-4 py-2 bg-blue-50 dark:bg-[rgba(126,231,135,0.1)] border border-blue-100 dark:border-[rgba(126,231,135,0.2)] rounded-lg flex items-center gap-2 max-w-full">
-              <FileSpreadsheet className="w-4 h-4 text-[#00A8FF] dark:text-[#7EE787] shrink-0" />
-              <p className="text-sm font-medium text-blue-600 dark:text-[#7EE787] truncate">
-                {file.name}
-              </p>
+      <div className="v-glow-card-wrapper animate-fade-up delay-100">
+        <div className="v-glow-card">
+          <div className="flex items-center gap-3 mb-8">
+            <div className="p-2 rounded-lg bg-[var(--bg3)]">
+              <FileSpreadsheet className="w-5 h-5 text-[var(--accent)]" />
             </div>
-          )}
-        </div>
-
-        {file && headers.length > 0 && !mappingConfirmed && (
-          <div className="mt-8 w-full text-left bg-white dark:bg-[#161B22] p-6 rounded-xl border border-slate-200 dark:border-[#30363D] shadow-sm">
-            <h3 className="text-lg font-semibold text-slate-900 dark:text-[#E6EDF3] mb-4 flex items-center gap-2">
-              <Settings2 className="w-5 h-5 text-[#00A8FF] dark:text-[#7EE787]" />
-              Map Columns
-            </h3>
-            <p className="text-sm text-slate-500 dark:text-[#8B949E] mb-6">
-              We've auto-detected some columns. Please verify and map the required fields to your Excel columns.
-            </p>
+            <h2 className="text-xl font-display font-semibold text-[var(--text)] tracking-wide">Upload RFQ Excel</h2>
+          </div>
+          
+          <div className="v-drop-zone p-12 flex flex-col items-center justify-center text-center cursor-pointer" onClick={() => fileInputRef.current?.click()}>
+            <div className="w-16 h-16 rounded-2xl bg-[var(--bg3)] flex items-center justify-center mb-4 transition-transform duration-300 hover:scale-110">
+              <UploadIcon className="w-8 h-8 text-[var(--text3)]" />
+            </div>
+            <p className="text-sm text-[var(--text3)] mb-6 max-w-md">Upload an Excel file containing RFQ descriptions. Ensure columns like Item Description, Size, Rating, and Body/MOC are present.</p>
             
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {REQUIRED_FIELDS.map(field => (
-                <div key={field.id} className="flex flex-col gap-1.5">
-                  <label className="text-sm font-medium text-slate-700 dark:text-[#E6EDF3]">
-                    {field.label}
-                  </label>
-                  <select
-                    value={columnMap[field.id] !== undefined ? columnMap[field.id] : ''}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setColumnMap(prev => {
-                        const next = { ...prev };
-                        if (val === '') delete next[field.id];
-                        else next[field.id] = parseInt(val, 10);
-                        return next;
-                      });
-                    }}
-                    className="w-full px-3 py-2 bg-slate-50 dark:bg-[#0D1117] border border-slate-200 dark:border-[#30363D] rounded-lg text-sm text-slate-900 dark:text-[#E6EDF3] focus:ring-2 focus:ring-[#00A8FF] dark:focus:ring-[#7EE787]"
-                  >
-                    <option value="">-- Select Column --</option>
-                    {headers.map((h, i) => (
-                      <option key={i} value={i}>
-                        {h || `Column ${i + 1}`}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              ))}
-            </div>
+            <input 
+              type="file" 
+              accept=".xlsx, .xls"
+              onChange={handleFileSelect}
+              className="hidden"
+              ref={fileInputRef}
+            />
             
-            <div className="mt-6 flex justify-end">
-              <button
-                onClick={() => setMappingConfirmed(true)}
-                className="flex items-center gap-2 px-6 py-2 bg-[#00A8FF] hover:bg-[#0090DB] dark:bg-[#238636] dark:hover:bg-[#2EA043] text-white rounded-lg text-sm font-medium transition-colors"
-              >
-                Confirm Mapping <ArrowRight className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-        )}
-
-        {file && mappingConfirmed && (
-          <div className="mt-6 px-4 py-3 bg-green-50 dark:bg-[rgba(126,231,135,0.1)] border border-green-200 dark:border-[rgba(126,231,135,0.2)] rounded-lg flex items-center justify-between w-full">
-            <div className="flex items-center gap-3">
-              <CheckCircle2 className="w-5 h-5 text-green-600 dark:text-[#7EE787]" />
-              <div>
-                <p className="text-sm font-medium text-green-800 dark:text-[#7EE787]">
+            <button 
+              className="v-btn-ghost px-6 py-2.5 text-sm font-medium"
+              onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
+            >
+              Select File
+            </button>
+            
+            {file && !mappingConfirmed && (
+              <div className="mt-6 px-4 py-2 bg-[rgba(34,197,94,0.06)] border border-[rgba(34,197,94,0.2)] rounded-lg flex items-center gap-2 max-w-full">
+                <FileSpreadsheet className="w-4 h-4 text-[var(--accent)] shrink-0" />
+                <p className="text-sm font-medium text-[var(--accent)] truncate">
                   {file.name}
                 </p>
-                <p className="text-xs text-green-600 dark:text-[#7EE787]/80">
-                  Columns mapped successfully
-                </p>
+              </div>
+            )}
+          </div>
+
+          {file && headers.length > 0 && !mappingConfirmed && (
+            <div className="mt-8 w-full text-left bg-[var(--bg3)] p-6 rounded-xl border border-[var(--border)]">
+              <h3 className="text-lg font-semibold text-[var(--text)] mb-4 flex items-center gap-2">
+                <Settings2 className="w-5 h-5 text-[var(--accent)]" />
+                Map Columns
+              </h3>
+              <p className="text-sm text-[var(--text3)] mb-6">
+                We've auto-detected some columns. Please verify and map the required fields to your Excel columns.
+              </p>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {REQUIRED_FIELDS.map(field => (
+                  <div key={field.id} className="flex flex-col gap-1.5">
+                    <label className="text-sm font-medium text-[var(--text)]">
+                      {field.label}
+                    </label>
+                    <select
+                      value={columnMap[field.id] !== undefined ? columnMap[field.id] : ''}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setColumnMap(prev => {
+                          const next = { ...prev };
+                          if (val === '') delete next[field.id];
+                          else next[field.id] = parseInt(val, 10);
+                          return next;
+                        });
+                      }}
+                      className="v-input w-full"
+                    >
+                      <option value="">-- Select Column --</option>
+                      {headers.map((h, i) => (
+                        <option key={i} value={i}>
+                          {h || `Column ${i + 1}`}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ))}
+              </div>
+              
+              <div className="mt-6 flex justify-end">
+                <button
+                  onClick={() => setMappingConfirmed(true)}
+                  className="v-btn-primary flex items-center gap-2 px-6 py-2 text-sm font-medium"
+                >
+                  Confirm Mapping <ArrowRight className="w-4 h-4" />
+                </button>
               </div>
             </div>
-            <button 
-              onClick={() => setMappingConfirmed(false)}
-              className="text-xs font-medium text-green-700 hover:text-green-800 dark:text-[#7EE787] dark:hover:text-white underline"
-            >
-              Edit Mapping
-            </button>
-          </div>
-        )}
+          )}
 
-        <button 
-          onClick={handleProcessRFQ}
-          disabled={loading || !file || !mappingConfirmed}
-          className="mt-8 w-full flex items-center justify-center gap-2 bg-gradient-to-r from-[#00A8FF] to-[#008DE6] hover:from-[#008DE6] hover:to-[#0070B8] dark:from-[#238636] dark:to-[#2EA043] dark:hover:from-[#2EA043] dark:hover:to-[#3FB950] text-white px-6 py-3.5 rounded-xl font-semibold transition-all shadow-[0_0_20px_rgba(0,168,255,0.3)] hover:shadow-[0_0_30px_rgba(0,168,255,0.5)] dark:shadow-[0_0_20px_rgba(126,231,135,0.2)] dark:hover:shadow-[0_0_30px_rgba(126,231,135,0.4)] disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none"
-        >
-          {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Play className="w-5 h-5" />}
-          PROCESS RFQ
-        </button>
+          {file && mappingConfirmed && (
+            <div className="mt-6 v-status-strip p-3 justify-between w-full">
+              <div className="flex items-center gap-3">
+                <CheckCircle2 className="w-5 h-5 text-[var(--accent)]" />
+                <div>
+                  <p className="text-sm font-medium text-[var(--accent)]">
+                    {file.name}
+                  </p>
+                  <p className="text-xs text-[var(--accent)] opacity-80">
+                    Columns mapped successfully
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setMappingConfirmed(false)}
+                className="text-xs font-medium text-[var(--accent)] hover:underline"
+              >
+                Edit Mapping
+              </button>
+            </div>
+          )}
+
+          <button 
+            onClick={handleProcessRFQ}
+            disabled={loading || !file || !mappingConfirmed}
+            className="mt-8 w-full v-btn-primary flex items-center justify-center gap-2 px-6 py-3.5 font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Play className="w-5 h-5" />}
+            PROCESS RFQ
+          </button>
+        </div>
       </div>
 
       {error && (
-        <div className="bg-red-50 dark:bg-[#3D0000] border border-red-200 dark:border-[#F85149] text-red-600 dark:text-[#F85149] px-6 py-4 rounded-xl flex items-start gap-4 backdrop-blur-sm">
+        <div className="bg-red-500/10 border border-red-500/30 text-red-500 px-6 py-4 rounded-xl flex items-start gap-4 animate-fade-up">
           <XCircle className="w-6 h-6 shrink-0" />
           <div>
-            <h3 className="font-semibold text-red-700 dark:text-[#F85149]">System Error</h3>
+            <h3 className="font-semibold">System Error</h3>
             <p className="text-sm mt-1 opacity-90">{error}</p>
           </div>
         </div>
       )}
 
       {result && (
-        <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+        <div className="space-y-8 animate-fade-up delay-200">
           
           {result.catalogue_count === 0 && (
-            <div className="bg-yellow-50 dark:bg-[#341A00] border border-yellow-200 dark:border-[#F0883E] text-yellow-800 dark:text-[#F0883E] px-6 py-4 rounded-xl flex items-start gap-4 mb-8">
+            <div className="bg-yellow-500/10 border border-yellow-500/30 text-yellow-500 px-6 py-4 rounded-xl flex items-start gap-4 mb-8">
               <AlertTriangle className="w-6 h-6 shrink-0" />
               <div>
                 <h3 className="font-semibold">No Product Catalogue Uploaded</h3>
@@ -340,119 +336,111 @@ export function Upload() {
             </div>
           )}
 
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-            <div className="bg-white dark:bg-[#161B22] p-6 rounded-xl border border-slate-200 dark:border-[#21262D] shadow-sm relative">
-              <div className="absolute top-0 left-0 w-3 h-3 hidden dark:block border-t-2 border-l-2 border-[#7EE787] opacity-40 rounded-tl-xl" />
-              <div className="absolute bottom-0 right-0 w-3 h-3 hidden dark:block border-b-2 border-r-2 border-[#7EE787] opacity-40 rounded-br-xl" />
-              <div className="text-xs font-semibold text-slate-500 dark:text-[#8B949E] uppercase tracking-widest mb-2">Total Rows</div>
-              <div className="text-4xl font-display font-bold text-slate-900 dark:text-[#E6EDF3]">{result.total_rows}</div>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="v-stat-card">
+              <div className="text-xs font-semibold text-[var(--text3)] uppercase tracking-widest mb-2">Total Rows</div>
+              <div className="v-stat-number text-4xl text-[var(--text)]">{result.total_rows}</div>
             </div>
-            <div className="bg-white dark:bg-[#161B22] p-6 rounded-xl border border-slate-200 dark:border-[#21262D] shadow-sm relative">
-              <div className="absolute top-0 left-0 w-3 h-3 hidden dark:block border-t-2 border-l-2 border-[#7EE787] opacity-40 rounded-tl-xl" />
-              <div className="absolute bottom-0 right-0 w-3 h-3 hidden dark:block border-b-2 border-r-2 border-[#7EE787] opacity-40 rounded-br-xl" />
-              <div className="text-xs font-semibold text-slate-500 dark:text-[#8B949E] uppercase tracking-widest mb-2">Matched</div>
-              <div className="text-4xl font-display font-bold text-[#00A8FF] dark:text-[#7EE787]">
+            <div className="v-stat-card">
+              <div className="text-xs font-semibold text-[var(--text3)] uppercase tracking-widest mb-2">Matched</div>
+              <div className="v-stat-number text-4xl text-[var(--accent)]">
                 {result.processed_rows.filter((r: any) => r.score >= 70).length}
               </div>
             </div>
-            <div className="bg-white dark:bg-[#161B22] p-6 rounded-xl border border-slate-200 dark:border-[#21262D] shadow-sm relative">
-              <div className="absolute top-0 left-0 w-3 h-3 hidden dark:block border-t-2 border-l-2 border-[#7EE787] opacity-40 rounded-tl-xl" />
-              <div className="absolute bottom-0 right-0 w-3 h-3 hidden dark:block border-b-2 border-r-2 border-[#7EE787] opacity-40 rounded-br-xl" />
-              <div className="text-xs font-semibold text-slate-500 dark:text-[#8B949E] uppercase tracking-widest mb-2">Unmatched</div>
-              <div className="text-4xl font-display font-bold text-slate-500 dark:text-[#8B949E]">
+            <div className="v-stat-card">
+              <div className="text-xs font-semibold text-[var(--text3)] uppercase tracking-widest mb-2">Unmatched</div>
+              <div className="v-stat-number text-4xl text-[var(--text3)]">
                 {result.processed_rows.filter((r: any) => r.score < 70).length}
               </div>
             </div>
-            <div className="bg-white dark:bg-[#161B22] p-6 rounded-xl border border-slate-200 dark:border-[#21262D] shadow-sm relative">
-              <div className="absolute top-0 left-0 w-3 h-3 hidden dark:block border-t-2 border-l-2 border-[#7EE787] opacity-40 rounded-tl-xl" />
-              <div className="absolute bottom-0 right-0 w-3 h-3 hidden dark:block border-b-2 border-r-2 border-[#7EE787] opacity-40 rounded-br-xl" />
-              <div className="text-xs font-semibold text-slate-500 dark:text-[#8B949E] uppercase tracking-widest mb-2">Flags</div>
-              <div className="text-4xl font-display font-bold text-yellow-500 dark:text-[#F0883E]">{result.flags?.length || 0}</div>
+            <div className="v-stat-card">
+              <div className="text-xs font-semibold text-[var(--text3)] uppercase tracking-widest mb-2">Flags</div>
+              <div className="v-stat-number text-4xl text-yellow-500">{result.flags?.length || 0}</div>
             </div>
           </div>
 
           {result.flags && result.flags.length > 0 && (
-            <div className="bg-white dark:bg-[#161B22] p-8 rounded-2xl border border-yellow-200 dark:border-[#F0883E]/50 shadow-lg relative">
-              <div className="absolute top-0 left-0 w-4 h-4 hidden dark:block border-t-2 border-l-2 border-[#F0883E] opacity-40 rounded-tl-2xl" />
-              <div className="absolute bottom-0 right-0 w-4 h-4 hidden dark:block border-b-2 border-r-2 border-[#F0883E] opacity-40 rounded-br-2xl" />
-              <div className="flex items-center gap-3 mb-6 text-yellow-600 dark:text-[#F0883E]">
-                <AlertTriangle className="w-6 h-6" />
-                <h3 className="text-lg font-display font-bold tracking-wide">Engineering Flags</h3>
-              </div>
-              <div className="space-y-3">
-                {result.flags.map((flag: any, idx: number) => (
-                  <div key={idx} className={`p-4 rounded-lg border flex items-start gap-3 ${flag.type === 'critical' ? 'bg-red-50 dark:bg-[#3D0000] border-red-200 dark:border-[#F85149] text-red-800 dark:text-[#F85149]' : 'bg-yellow-50 dark:bg-[#341A00] border-yellow-200 dark:border-[#F0883E] text-yellow-800 dark:text-[#F0883E]'}`}>
-                    <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
-                    <div>
-                      <div className="font-semibold text-sm">Row {flag.row}: {flag.field}</div>
-                      <div className="text-sm opacity-90">{flag.message}</div>
+            <div className="v-glow-card-wrapper" style={{ '--ga': '0deg', background: 'transparent' } as any}>
+              <div className="v-glow-card border-yellow-500/30 bg-yellow-500/5">
+                <div className="flex items-center gap-3 mb-6 text-yellow-500">
+                  <AlertTriangle className="w-6 h-6" />
+                  <h3 className="text-lg font-display font-bold tracking-wide">Engineering Flags</h3>
+                </div>
+                <div className="space-y-3">
+                  {result.flags.map((flag: any, idx: number) => (
+                    <div key={idx} className={`p-4 rounded-lg border flex items-start gap-3 ${flag.type === 'critical' ? 'bg-red-500/10 border-red-500/30 text-red-500' : 'bg-yellow-500/10 border-yellow-500/30 text-yellow-500'}`}>
+                      <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" />
+                      <div>
+                        <div className="font-semibold text-sm">Row {flag.row}: {flag.field}</div>
+                        <div className="text-sm opacity-90">{flag.message}</div>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
             </div>
           )}
 
-          <div className="bg-white dark:bg-[#161B22] rounded-2xl border border-slate-200 dark:border-[#21262D] shadow-lg overflow-hidden flex flex-col">
-            <div className="p-6 border-b border-slate-200 dark:border-[#21262D] flex justify-between items-center bg-slate-50 dark:bg-[#0D1117]">
-              <h3 className="text-lg font-display font-bold text-slate-900 dark:text-[#E6EDF3] tracking-wide">Working Sheet Results</h3>
+          <div className="v-glow-card p-0 overflow-hidden flex flex-col">
+            <div className="p-6 border-b border-[var(--border)] flex justify-between items-center bg-[var(--bg3)]">
+              <h3 className="text-lg font-display font-bold text-[var(--text)] tracking-wide">Working Sheet Results</h3>
               <button 
                 onClick={handleDownload}
-                className="flex items-center gap-2 bg-slate-900 dark:bg-[#238636] text-white dark:text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-slate-800 dark:hover:bg-[#2EA043] transition-colors"
+                className="v-btn-primary flex items-center gap-2 px-4 py-2 text-sm font-semibold"
               >
                 <Download className="w-4 h-4" />
                 Download Excel
               </button>
             </div>
-            <div className="overflow-x-auto">
+            <div className="v-table overflow-x-auto border-none rounded-none">
               <table className="w-full text-left text-sm">
-                <thead className="bg-slate-100 dark:bg-[#0D1117] text-slate-600 dark:text-[#8B949E] font-semibold text-xs uppercase tracking-wider">
+                <thead>
                   <tr>
-                    <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Row</th>
-                    <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Valve Type</th>
-                    <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Size</th>
-                    <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Class</th>
-                    <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Standard</th>
-                    <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Catalogue Match</th>
-                    <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Score</th>
-                    <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">MOC</th>
-                    <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Trim</th>
-                    <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Seat</th>
-                    <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Gasket</th>
-                    <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Packing</th>
-                    <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Operator</th>
-                    <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">End Detail</th>
-                    <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Bolting</th>
-                    <th className="px-4 py-3 border-b border-slate-200 dark:border-[#21262D]">Action</th>
+                    <th>Row</th>
+                    <th>Valve Type</th>
+                    <th>Size</th>
+                    <th>Class</th>
+                    <th>Standard</th>
+                    <th>Catalogue Match</th>
+                    <th>Score</th>
+                    <th>MOC</th>
+                    <th>Trim</th>
+                    <th>Seat</th>
+                    <th>Gasket</th>
+                    <th>Packing</th>
+                    <th>Operator</th>
+                    <th>End Detail</th>
+                    <th>Bolting</th>
+                    <th>Action</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-200 dark:divide-[#21262D] text-slate-700 dark:text-[#E6EDF3]">
+                <tbody className="text-[var(--text2)]">
                   {result.processed_rows.map((row: any, idx: number) => {
                     const hasFlag = result.flags.some((f: any) => f.row === idx + 1);
                     return (
-                      <tr key={idx} className={`hover:bg-slate-50 dark:hover:bg-[rgba(126,231,135,0.04)] transition-colors ${hasFlag ? 'bg-yellow-50/50 dark:bg-[rgba(240,136,62,0.1)]' : ''}`}>
-                        <td className="px-4 py-3 font-mono text-xs text-slate-500 dark:text-[#8B949E]">{idx + 1}</td>
-                        <td className="px-4 py-3 font-medium text-slate-900 dark:text-[#E6EDF3]">{row.valveType}</td>
-                        <td className="px-4 py-3">{row.size}</td>
-                        <td className="px-4 py-3">{row.class}</td>
-                        <td className="px-4 py-3 text-xs">{row.standard}</td>
-                        <td className="px-4 py-3 text-xs font-medium">{row.catalogueModel || row.model}</td>
-                        <td className="px-4 py-3 text-xs">
-                          {row.score >= 70 && <span className="px-2 py-1 bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400 rounded-full">{row.score} (Match)</span>}
-                          {row.score >= 40 && row.score < 70 && <span className="px-2 py-1 bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400 rounded-full">{row.score} (Review)</span>}
-                          {row.score < 40 && <span className="px-2 py-1 bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400 rounded-full">{row.score} (Fail)</span>}
+                      <tr key={idx} className={hasFlag ? 'bg-yellow-500/5' : ''}>
+                        <td className="font-mono text-xs text-[var(--text3)]">{idx + 1}</td>
+                        <td className="font-medium text-[var(--text)]">{row.valveType}</td>
+                        <td>{row.size}</td>
+                        <td>{row.class}</td>
+                        <td className="text-xs">{row.standard}</td>
+                        <td className="text-xs font-medium">{row.catalogueModel || row.model}</td>
+                        <td className="text-xs">
+                          {row.score >= 70 && <span className="v-badge-match">{row.score} (Match)</span>}
+                          {row.score >= 40 && row.score < 70 && <span className="px-2 py-1 bg-yellow-500/10 text-yellow-500 rounded-full">{row.score} (Review)</span>}
+                          {row.score < 40 && <span className="px-2 py-1 bg-red-500/10 text-red-500 rounded-full">{row.score} (Fail)</span>}
                         </td>
-                        <td className="px-4 py-3 text-xs">{row.moc}</td>
-                        <td className="px-4 py-3 text-xs">{row.trim}</td>
-                        <td className="px-4 py-3 text-xs">{row.seat}</td>
-                        <td className="px-4 py-3 text-xs max-w-[150px] truncate" title={row.gasket}>{row.gasket}</td>
-                        <td className="px-4 py-3 text-xs max-w-[150px] truncate" title={row.packing}>{row.packing}</td>
-                        <td className="px-4 py-3 text-xs">{row.operator}</td>
-                        <td className="px-4 py-3 text-xs">{row.endDetail}</td>
-                        <td className="px-4 py-3 text-xs">{row.bolting}</td>
-                        <td className="px-4 py-3 text-xs">
+                        <td className="text-xs">{row.moc}</td>
+                        <td className="text-xs">{row.trim}</td>
+                        <td className="text-xs">{row.seat}</td>
+                        <td className="text-xs max-w-[150px] truncate" title={row.gasket}>{row.gasket}</td>
+                        <td className="text-xs max-w-[150px] truncate" title={row.packing}>{row.packing}</td>
+                        <td className="text-xs">{row.operator}</td>
+                        <td className="text-xs">{row.endDetail}</td>
+                        <td className="text-xs">{row.bolting}</td>
+                        <td>
                           {row.score >= 70 ? (
-                            <CheckCircle2 className="w-5 h-5 text-green-500" />
+                            <CheckCircle2 className="w-5 h-5 text-[var(--accent)]" />
                           ) : (
                             <AlertTriangle className="w-5 h-5 text-yellow-500" />
                           )}

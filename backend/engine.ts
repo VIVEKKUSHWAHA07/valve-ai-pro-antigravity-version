@@ -102,9 +102,19 @@ export function extractSizeFromText(text: string): string | null {
     return `${mmMatch[1]}mm`;
   }
 
-  const inchMatch = text.match(/\b(\d+(?:\.\d+)?)\s*(?:inch|inches|"|''|in\b|NB\b|bore\b)/i);
+  const npsMatch = text.match(/\bNPS\s*(\d+(?:\.\d+)?)/i);
+  if (npsMatch) {
+    return `${npsMatch[1]}"`;
+  }
+
+  const inchMatch = text.match(/\b(\d+(?:\.\d+)?)\s*(?:inch|inches|in\b)/i);
   if (inchMatch) {
     return `${inchMatch[1]}"`;
+  }
+
+  const quoteMatch = text.match(/\b(\d+(?:\.\d+)?)\s*["'']\s/);
+  if (quoteMatch) {
+    return `${quoteMatch[1]}"`;
   }
 
   // Fallback for fractions like 1/2" 3/4" 1.1/2" 1-1/2" 1 1/2"
@@ -112,11 +122,14 @@ export function extractSizeFromText(text: string): string | null {
   if (fracMatch) return fracMatch[1].replace(/[\s\-]/, '.');
 
   // Pattern 5: SIZE keyword
-  const sizeKeyword = text.match(/SIZE\s*:?\s*(\d+(?:\.\d+)?(?:[\s\-]\d+\/\d+)?"?)/i);
+  const sizeKeyword = text.match(/SIZE\s*:?\s*(\d+(?:\.\d+)?(?:[\s\-]\d+\/\d+)?(?:inch|inches|"|''|in\b|mm\b)?)/i);
   if (sizeKeyword) {
     let val = sizeKeyword[1];
     if (val.includes(' ') || val.includes('-')) {
       val = val.replace(/[\s\-]/, '.');
+    }
+    if (!val.includes('"') && !val.toLowerCase().includes('mm') && !val.toLowerCase().includes('in')) {
+      val += '"';
     }
     return val;
   }
@@ -197,38 +210,30 @@ function extractMOCFromText(text: string): {
 } {
   const t = text.toUpperCase();
 
-  if (/A351\s*CF8M|CF8M/.test(t))
-    return { bodyMoc:'A351 CF8M', trimMoc: extractTrimMOC(t),
-             resolvedMoc:'A351 CF8M' };
+  let bodyMoc = null;
+  let trimMoc = null;
 
-  if (/A352\s*LCB|LCB/.test(t))
-    return { bodyMoc:'A352 LCB', trimMoc: extractTrimMOC(t),
-             resolvedMoc:'A352 LCB' };
+  const bodyMatch = text.match(/(?:BODY\s*IN|BODY\s*MATERIAL|BODY\s*:)\s*([^,;\n]+)/i);
+  if (bodyMatch) {
+    bodyMoc = bodyMatch[1].trim();
+  } else {
+    if (/A351\s*CF8M|CF8M/.test(t)) bodyMoc = 'A351 CF8M';
+    else if (/A352\s*LCB|LCB/.test(t)) bodyMoc = 'A352 LCB';
+    else if (/A216\s*WCB|WCB/.test(t)) bodyMoc = 'A216 WCB';
+    else if (/\bA105\b/.test(t)) bodyMoc = 'A105';
+    else if (/A182\s*F\s*316\s*(?:BODY|\/A351)/.test(t) || /A182\s*F316\s*\/\s*A351/.test(t)) bodyMoc = 'A182 F316 / A351 CF8M';
+  }
 
-  const a105BodyIdx = t.search(/A105\s*(?:BODY|CARBON\s*STEEL\s*BODY)/);
-  const a216Idx = t.search(/A216\s*WCB/);
-  if (a105BodyIdx !== -1 && (a216Idx === -1 || a105BodyIdx < a216Idx))
-    return { bodyMoc:'A105', trimMoc: extractTrimMOC(t),
-             resolvedMoc:'A105' };
+  const trimMatch = text.match(/(?:TRIM\s*IN|TRIM\s*:|SEAT\s*IN)\s*([^,;\n]+)/i);
+  if (trimMatch) {
+    trimMoc = trimMatch[1].trim();
+  } else {
+    trimMoc = extractTrimMOC(t);
+  }
 
-  if (/A216\s*WCB/.test(t))
-    return { bodyMoc:'A216 WCB', trimMoc: extractTrimMOC(t),
-             resolvedMoc:'A216 WCB' };
+  const resolvedMoc = bodyMoc ? getMOC(bodyMoc).resolved || bodyMoc : 'Not identified';
 
-  if (/\bA105\b/.test(t))
-    return { bodyMoc:'A105', trimMoc: extractTrimMOC(t),
-             resolvedMoc:'A105' };
-
-  if (/A182\s*F\s*316\s*(?:BODY|\/A351)/.test(t) ||
-      /A182\s*F316\s*\/\s*A351/.test(t))
-    return { bodyMoc:'A182 F316 / A351 CF8M', trimMoc: extractTrimMOC(t),
-             resolvedMoc:'SS316' };
-
-  if (/\bWCB\b/.test(t))
-    return { bodyMoc:'A216 WCB', trimMoc: extractTrimMOC(t),
-             resolvedMoc:'A216 WCB' };
-
-  return { bodyMoc: null, trimMoc: null, resolvedMoc: 'Not identified' };
+  return { bodyMoc, trimMoc, resolvedMoc };
 }
 
 function extractStandardFromText(
@@ -331,12 +336,22 @@ function extractTrimFromText(text: string,
   const t = text.toUpperCase();
   const parts: string[] = [];
 
-  const stemF = t.match(/A182\s*F\s*(3\d+)\s*STEM/);
-  const stemSS = t.match(/SS\s*(3\d+)\s*STEM/);
-  if (stemF)       parts.push(`F${stemF[1]} Stem`);
-  else if (stemSS) parts.push(`SS${stemSS[1]} Stem`);
-  else if (/STEM/.test(t) && /316/.test(t))
-    parts.push('SS316 Stem');
+  const trimMatch = text.match(/(?:TRIM\s*IN|TRIM\s*:|SEAT\s*IN)\s*([^,;\n]+)/i);
+  if (trimMatch) {
+    parts.push(trimMatch[1].trim());
+  }
+
+  const stemMatch = text.match(/(?:STEM\s*IN|STEM\s*:)\s*([^,;\n]+)/i);
+  if (stemMatch) {
+    parts.push(stemMatch[1].trim() + ' Stem');
+  } else {
+    const stemF = t.match(/A182\s*F\s*(3\d+)\s*STEM/);
+    const stemSS = t.match(/SS\s*(3\d+)\s*STEM/);
+    if (stemF)       parts.push(`F${stemF[1]} Stem`);
+    else if (stemSS) parts.push(`SS${stemSS[1]} Stem`);
+    else if (/STEM/.test(t) && /316/.test(t))
+      parts.push('SS316 Stem');
+  }
 
   if (/BALL\s*VALVE/.test(t)) {
     if (/F316\s*SS.*?BALL|SS.*?F316.*?BALL/.test(t))
@@ -849,7 +864,41 @@ function buildAliasMap(catalogueMap: any[]): Record<string, string> {
   return aliasMap;
 }
 
-export async function processRFQ(fileBuffer: Buffer, userId?: string, filename?: string, customColumnMap?: Record<string, number>, catalogueMap?: any[]): Promise<ProcessResult> {
+export async function processRFQ(
+  fileBuffer: Buffer,
+  columnMap: Record<string, string>,
+  catalogueItems: Array<{category: string, value: string}>,
+  userRules: Array<any>,
+  filename: string = 'RFQ.xlsx',
+  userId?: string
+): Promise<Buffer> {
+  // STEP 1: Guard — fail loudly if catalogue missing
+  if (!catalogueItems || catalogueItems.length === 0) {
+    throw new Error(
+      'No catalogue found. Please import your catalogue before processing RFQ.'
+    )
+  }
+
+  // STEP 2: Build catalogueMap — group by category
+  const catalogueMap: Record<string, string[]> = {}
+  for (const item of catalogueItems) {
+    const cat = item.category?.trim()
+    const val = item.value?.trim()
+    if (!cat || !val) continue
+    if (!catalogueMap[cat]) catalogueMap[cat] = []
+    catalogueMap[cat].push(val)
+  }
+
+  // STEP 3: Build alias/rules map from userRules
+  const aliasMap: Record<string, string> = {}
+  for (const rule of (userRules || [])) {
+    const input = rule.input || rule.rule_data?.input || rule.rule_data?.customerWrites;
+    const output = rule.output || rule.rule_data?.output || rule.rule_data?.resolvedMoc;
+    if (input && output) {
+      aliasMap[input.toLowerCase().trim()] = output
+    }
+  }
+
   const workbook = xlsx.read(fileBuffer, { type: 'buffer' });
   const sheetName = workbook.SheetNames[0];
   const sheet = workbook.Sheets[sheetName];
@@ -920,22 +969,11 @@ export async function processRFQ(fileBuffer: Buffer, userId?: string, filename?:
   const headers = isSingleColumn ? [] : (data[headerRowIndex] as any[]);
   const columnMap = customColumnMap || (isSingleColumn ? {} : detectColumns(headers));
 
-  const isMultiColumn = customColumnMap ? true : (headers.length >= 3 &&
+  const isMultiColumn = columnMap && Object.keys(columnMap).length > 0 ? true : (headers.length >= 3 &&
     headers.some(h => /size|dn|nps/i.test(String(h))) &&
     headers.some(h => /class|rating|pressure/i.test(String(h))));
 
-  const isParagraphMode = customColumnMap ? false : (isSingleColumn || !isMultiColumn);
-
-  // Fetch product catalogue and rules
-  const { catalogue, catalogueCount, notMfgList, userCustomRules } = await fetchUserContext(userId);
-  
-  // Use passed catalogueMap if available, otherwise fallback to the one from fetchUserContext
-  const finalCatalogue = catalogueMap && catalogueMap.length > 0 ? catalogueMap : catalogue;
-  
-  // Build auto-aliases from catalogue
-  const autoAliases = buildAliasMap(finalCatalogue);
-  // Merge auto-aliases into ALIAS_MAP
-  Object.assign(ALIAS_MAP.valve_type, autoAliases);
+  const isParagraphMode = columnMap && Object.keys(columnMap).length > 0 ? false : (isSingleColumn || !isMultiColumn);
 
   const result: ProcessResult = {
     total_rows: dataRows.length,
@@ -945,7 +983,7 @@ export async function processRFQ(fileBuffer: Buffer, userId?: string, filename?:
     processed_rows: [],
     columnMap: columnMap,
     format: 'multi_column',
-    catalogue_count: catalogueMap ? catalogueMap.length : catalogueCount
+    catalogue_count: catalogueItems.length
   };
 
   // Helper — get value by detected column, fallback to fixed index
@@ -977,7 +1015,7 @@ export async function processRFQ(fileBuffer: Buffer, userId?: string, filename?:
       };
     }
 
-    const { processedRow, flags, isNotMfg } = await processSingleRow(rowData, i + (isSingleColumn ? 1 : headerRowIndex + 2), finalCatalogue, notMfgList, userCustomRules, isParagraphMode);
+    const { processedRow, flags, isNotMfg } = await processSingleRow(rowData, i + (isSingleColumn ? 1 : headerRowIndex + 2), catalogueMap, aliasMap, [], isParagraphMode);
 
     if (isNotMfg) {
       result.not_manufactured++;
@@ -1081,7 +1119,7 @@ export async function processRFQ(fileBuffer: Buffer, userId?: string, filename?:
     ['Flags raised:', result.flags.length],
     ['Processing time:', 'N/A'],
     ['─────────────────────────────────────', ''],
-    ['Catalogue items used:', catalogue.length],
+    ['Catalogue items used:', catalogueItems.length],
     ['Engine version:', '1.0.0']
   ];
 
@@ -1089,11 +1127,8 @@ export async function processRFQ(fileBuffer: Buffer, userId?: string, filename?:
   wsSummary['!cols'] = [{wch:28},{wch:30}];
   xlsx.utils.book_append_sheet(wb, wsSummary, 'SUMMARY');
 
-  // Convert to base64 for download
-  const outBuffer = xlsx.write(wb, { type: 'base64', bookType: 'xlsx' });
-  result.download_url = `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${outBuffer}`;
-
-  return result;
+  const excelBuffer = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  return excelBuffer;
 }
 
 export async function generateTrace(desc: string, userId?: string): Promise<string[]> {
@@ -1301,9 +1336,19 @@ function parseSize(str: string): string | null {
     if (norm === frac || norm.includes(frac)) return val.toString();
   }
   
-  const numMatch = norm.match(/(\d+(?:\.\d+)?)/);
-  if (numMatch) {
-    const num = parseFloat(numMatch[1]);
+  // Only match numbers if they have a unit like ", inch, mm, or are explicitly in a size column
+  // Wait, parseSize is used for the size column. If the size column is just "2", it should be parsed.
+  // But if it's "Model 95", it shouldn't be parsed as 95.
+  // Let's check if the string is exactly a number, or starts with a number followed by a unit.
+  const exactNumMatch = norm.match(/^(\d+(?:\.\d+)?)$/);
+  if (exactNumMatch) {
+    const num = parseFloat(exactNumMatch[1]);
+    if (num > 0 && num <= 100) return num.toString();
+  }
+
+  const unitNumMatch = norm.match(/(\d+(?:\.\d+)?)\s*(?:"|''|INCH|IN|MM|NB|BORE)/);
+  if (unitNumMatch) {
+    const num = parseFloat(unitNumMatch[1]);
     if (num > 0 && num <= 100) return num.toString();
   }
   
