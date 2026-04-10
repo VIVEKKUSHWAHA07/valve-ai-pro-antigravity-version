@@ -103,27 +103,32 @@ app.post('/api/upload-rfq', upload.single('file'), async (req, res) => {
     let fetchedCatalogueItems: any[] = [];
     let userRules: any[] = [];
     
-    if (authHeader && userId) {
+    const SUPABASE_URL = process.env.SUPABASE_URL || 'https://stqkpgkyvtmvvijilgmc.supabase.co';
+    const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN0cWtwZ2t5dnRtdnZpamlsZ21jIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NjcyMzYsImV4cCI6MjA5MDI0MzIzNn0.92FxL9YuEwesIb1T-vowKqY1no58a0FKIGwBqlMu-uw';
+    
+    let supabase;
+    if (authHeader) {
       const token = authHeader.replace('Bearer ', '');
-      const SUPABASE_URL = process.env.SUPABASE_URL || 'https://stqkpgkyvtmvvijilgmc.supabase.co';
-      const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN0cWtwZ2t5dnRtdnZpamlsZ21jIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NjcyMzYsImV4cCI6MjA5MDI0MzIzNn0.92FxL9YuEwesIb1T-vowKqY1no58a0FKIGwBqlMu-uw';
-      
-      const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
         global: { headers: { Authorization: `Bearer ${token}` } }
       });
+    } else {
+      supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    }
+    
+    const { data: catalogueItems, error } = await supabase
+      .from('catalogue_items')
+      .select('*');
       
-      const { data: catalogueItems, error } = await supabase
-        .from('catalogue_items')
-        .select('*')
-        .eq('user_id', userId)
-        .range(0, 9999);
-        
-      console.log('upload-rfq catalogue fetch:', catalogueItems?.length, error);
-        
-      if (catalogueItems) {
-        fetchedCatalogueItems = catalogueItems;
-      }
+    console.log('[Catalogue] error:', error);
+    console.log('[Catalogue] rows loaded:', catalogueItems?.length ?? 0);
+    console.log('[Catalogue] sample row:', JSON.stringify(catalogueItems?.[0]));
+      
+    if (catalogueItems) {
+      fetchedCatalogueItems = catalogueItems;
+    }
 
+    if (userId) {
       const { data: rules } = await supabase
         .from('user_rules')
         .select('*')
@@ -346,27 +351,32 @@ app.post('/api/test/batch', upload.single('file'), async (req, res) => {
     let fetchedCatalogueItems: any[] = [];
     let userRules: any[] = [];
     
-    if (authHeader && userId) {
+    const SUPABASE_URL = process.env.SUPABASE_URL || 'https://stqkpgkyvtmvvijilgmc.supabase.co';
+    const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN0cWtwZ2t5dnRtdnZpamlsZ21jIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NjcyMzYsImV4cCI6MjA5MDI0MzIzNn0.92FxL9YuEwesIb1T-vowKqY1no58a0FKIGwBqlMu-uw';
+    
+    let supabase;
+    if (authHeader) {
       const token = authHeader.replace('Bearer ', '');
-      const SUPABASE_URL = process.env.SUPABASE_URL || 'https://stqkpgkyvtmvvijilgmc.supabase.co';
-      const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN0cWtwZ2t5dnRtdnZpamlsZ21jIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NjcyMzYsImV4cCI6MjA5MDI0MzIzNn0.92FxL9YuEwesIb1T-vowKqY1no58a0FKIGwBqlMu-uw';
-      
-      const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
         global: { headers: { Authorization: `Bearer ${token}` } }
       });
+    } else {
+      supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    }
+    
+    const { data: catalogueItems, error } = await supabase
+      .from('catalogue_items')
+      .select('*');
       
-      const { data: catalogueItems, error } = await supabase
-        .from('catalogue_items')
-        .select('*')
-        .eq('user_id', userId)
-        .range(0, 9999);
-        
-      console.log('test/batch catalogue fetch:', catalogueItems?.length, error);
-        
-      if (catalogueItems) {
-        fetchedCatalogueItems = catalogueItems;
-      }
+    console.log('[Catalogue] error:', error);
+    console.log('[Catalogue] rows loaded:', catalogueItems?.length ?? 0);
+    console.log('[Catalogue] sample row:', JSON.stringify(catalogueItems?.[0]));
+      
+    if (catalogueItems) {
+      fetchedCatalogueItems = catalogueItems;
+    }
 
+    if (userId) {
       const { data: rules } = await supabase
         .from('user_rules')
         .select('*')

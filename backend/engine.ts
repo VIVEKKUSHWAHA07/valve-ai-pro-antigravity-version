@@ -713,7 +713,7 @@ export async function fetchUserContext(userId?: string) {
 
   try {
     const [{ data: catData, error: catError }, { data: rulesData, error: rulesError }, { data: customData }] = await Promise.all([
-      sb.from('product_catalogue').select('*').eq('user_id', userId),
+      sb.from('catalogue_items').select('*'),
       sb.from('engine_rules').select('*').eq('user_id', userId),
       sb.from('user_custom_rules').select('*').eq('user_id', userId).eq('active', true).order('priority', { ascending: true })
     ]);
@@ -879,25 +879,23 @@ export async function processRFQ(
     )
   }
 
-  // STEP 2: Build catalogueMap — group by category
-  const catalogueMap: Record<string, string[]> = {}
-  for (const item of catalogueItems) {
-    const cat = item.category?.trim()
-    const val = item.value?.trim()
-    if (!cat || !val) continue
-    if (!catalogueMap[cat]) catalogueMap[cat] = []
-    catalogueMap[cat].push(val)
-  }
-
-  // STEP 3: Build alias/rules map from userRules
-  const aliasMap: Record<string, string> = {}
-  for (const rule of (userRules || [])) {
-    const input = rule.input || rule.rule_data?.input || rule.rule_data?.customerWrites;
-    const output = rule.output || rule.rule_data?.output || rule.rule_data?.resolvedMoc;
-    if (input && output) {
-      aliasMap[input.toLowerCase().trim()] = output
+  // STEP 2: Extract notMfgList from userRules
+  let notMfgList = ['Butterfly Valve', 'Plug Valve', 'Strainer', 'Double Block & Bleed'];
+  const notMfgRules = (userRules || []).filter(r => r.rule_type === 'notmfg');
+  for (const rule of notMfgRules) {
+    const { label, active } = rule.rule_data || {};
+    if (active && label && !notMfgList.includes(label)) {
+      notMfgList.push(label);
+    } else if (!active && label) {
+      notMfgList = notMfgList.filter(l => l !== label);
     }
   }
+
+  // STEP 3: Extract userCustomRules from userRules
+  const userCustomRules = (userRules || [])
+    .filter(r => r.rule_type === 'custom' && (r.rule_data?.active || r.active))
+    .map(r => r.rule_data || r)
+    .sort((a, b) => (a.priority || 0) - (b.priority || 0));
 
   const workbook = xlsx.read(fileBuffer, { type: 'buffer' });
   const sheetName = workbook.SheetNames[0];
@@ -955,7 +953,8 @@ export async function processRFQ(
     }
   }
 
-  if (customColumnMap) {
+  const hasCustomMap = columnMap && Object.keys(columnMap).length > 0;
+  if (hasCustomMap) {
     isSingleColumn = false;
     if (headerRowIndex === -1) {
       for (let i = 0; i < Math.min(10, data.length); i++) {
@@ -967,13 +966,13 @@ export async function processRFQ(
 
   const dataRows = isSingleColumn ? data : data.slice(headerRowIndex + 1);
   const headers = isSingleColumn ? [] : (data[headerRowIndex] as any[]);
-  const columnMap = customColumnMap || (isSingleColumn ? {} : detectColumns(headers));
+  const activeColumnMap = hasCustomMap ? columnMap : (isSingleColumn ? {} : detectColumns(headers));
 
-  const isMultiColumn = columnMap && Object.keys(columnMap).length > 0 ? true : (headers.length >= 3 &&
+  const isMultiColumn = activeColumnMap && Object.keys(activeColumnMap).length > 0 ? true : (headers.length >= 3 &&
     headers.some(h => /size|dn|nps/i.test(String(h))) &&
     headers.some(h => /class|rating|pressure/i.test(String(h))));
 
-  const isParagraphMode = columnMap && Object.keys(columnMap).length > 0 ? false : (isSingleColumn || !isMultiColumn);
+  const isParagraphMode = activeColumnMap && Object.keys(activeColumnMap).length > 0 ? false : (isSingleColumn || !isMultiColumn);
 
   const result: ProcessResult = {
     total_rows: dataRows.length,
@@ -981,14 +980,14 @@ export async function processRFQ(
     not_manufactured: 0,
     flags: [],
     processed_rows: [],
-    columnMap: columnMap,
+    columnMap: activeColumnMap,
     format: 'multi_column',
     catalogue_count: catalogueItems.length
   };
 
   // Helper — get value by detected column, fallback to fixed index
   const get = (row: any[], field: string, fallback: number): string =>
-    String(row[columnMap[field] !== undefined ? columnMap[field] : fallback] || '');
+    String(row[activeColumnMap[field] !== undefined ? activeColumnMap[field] : fallback] || '');
 
   for (let i = 0; i < dataRows.length; i++) {
     const row = dataRows[i];
@@ -1015,7 +1014,7 @@ export async function processRFQ(
       };
     }
 
-    const { processedRow, flags, isNotMfg } = await processSingleRow(rowData, i + (isSingleColumn ? 1 : headerRowIndex + 2), catalogueMap, aliasMap, [], isParagraphMode);
+    const { processedRow, flags, isNotMfg } = await processSingleRow(rowData, i + (isSingleColumn ? 1 : headerRowIndex + 2), catalogueItems, notMfgList, userCustomRules, isParagraphMode);
 
     if (isNotMfg) {
       result.not_manufactured++;
